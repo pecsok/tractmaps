@@ -1,0 +1,6 @@
+# ignore Python related files
+__pycache__
+.ipynb_checkpoints
+
+# ignore Mac related files
+.DS_Store

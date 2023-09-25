@@ -4,6 +4,7 @@ import nilearn.plotting as plotting
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
 hcp.mmp_short = hcp.mmp
@@ -237,4 +238,31 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
                                   title_fontsize = 15
                                  )
     
-       
+
+
+##### Generate a custom heatmap #######
+def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_col, significance_threshold = 0.05, cmap = 'coolwarm', title = None):
+    
+    # pivot the results dataframe
+    
+    pivot_df = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = result_value_col)
+
+    # Create a wider heatmap
+    plt.figure(figsize=(20, 2))  # Adjust the width and height as needed
+
+    # Create a mask to hide non-significant values
+    mask = result_df.pivot_table(index= brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
+
+    # define a custom colormap
+    colormap = sns.diverging_palette(220, 10, as_cmap = True)
+
+    # Create the heatmap with empty white boxes for non-significant values
+    sns.heatmap(pivot_df, mask = mask, cmap = colormap, linewidths = 0.5, linecolor = 'grey') # remove the mask if you want to see all values (including non-significant ones)
+    
+    # Add a title to the heatmap if provided
+    if title:
+        plt.title(title, fontsize = 16)
+    
+    # Show the heatmap
+    plt.show()
+    

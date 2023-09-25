@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import statsmodels.api as sm
 
 # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
 hcp.mmp_short = hcp.mmp
@@ -266,3 +267,101 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     # Show the heatmap
     plt.show()
     
+    
+### Run linear regression #####
+def run_linear_regression(df, x, y, separate_by_group=False, group_column=None, plot=True):
+    """
+    Perform a linear regression on the DataFrame to test the effect of 'x' on 'y'.
+    Optionally, run separate regressions based on a grouping variable.
+
+    Parameters:
+    - df (DataFrame): The DataFrame containing the data.
+    - x (str): The name of the independent variable.
+    - y (str): The name of the dependent variable.
+    - separate_by_group (bool): If True, run separate regressions based on the 'group_column'.
+                               If False (default), run a single regression for the entire dataset.
+    - group_column (str or None): The name of the grouping variable (if separate_by_group is True).
+    - plot (bool): If True (default), plot the relationship between 'x' and 'y' with regression lines.
+                  If False, do not plot.
+
+    Returns:
+    - None
+    """
+    if separate_by_group:
+        if group_column is None:
+            raise ValueError("You must specify a 'group_column' when 'separate_by_group' is True.")
+
+        # Get the unique values of the group_column
+        unique_groups = df[group_column].unique()
+
+        # Initialize a color palette for plotting
+        palette = sns.color_palette("husl", n_colors=len(unique_groups))
+
+        # Create a figure for plotting
+        if plot:
+            plt.figure(figsize=(10, 6))
+
+        # Iterate through each unique group
+        for i, group in enumerate(unique_groups):
+            # Filter the data for the specific group
+            group_data = df[df[group_column] == group]
+
+            # Define the dependent (y) and independent (X) variables
+            y_values = group_data[y]
+            x_values = group_data[[x]]
+            x_values = sm.add_constant(x_values)  # Add a constant term (intercept) to the model
+
+            # Fit the linear regression model
+            model = sm.OLS(y_values, x_values).fit()
+
+            # Print the p-value for the 'x' coefficient
+            print(f"Group: {group}")
+            print(f"p-value for {x}: {model.pvalues[x]:.4f}")
+            print("\n")
+
+            if plot:
+                # Plot the relationship between 'x' and 'y' with regression line
+                plt.scatter(x_values[x], y_values, label=f"Group: {group}", color=palette[i])
+                plt.plot(x_values[x], model.predict(x_values), color=palette[i])
+
+        if plot:
+            # Customize the plot
+            plt.title(f"Relationship between {x} and {y}")
+            plt.xlabel(x)
+            plt.ylabel(y)
+            plt.legend(title=group_column)
+
+            # Show the plot
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
+    else:
+        # Define the dependent (y) and independent (X) variables for the entire dataset
+        y_values = df[y]
+        x_values = df[[x]]
+        x_values = sm.add_constant(x_values)  # Add a constant term (intercept) to the model
+
+        # Fit the linear regression model for the entire dataset
+        model = sm.OLS(y_values, x_values).fit()
+
+        # Print the p-value for the 'x' coefficient
+        print("Entire Dataset:")
+        print(f"p-value for {x}: {model.pvalues[x]:.4f}")
+
+        if plot:
+            # Create a figure for plotting
+            plt.figure(figsize=(10, 6))
+
+            # Plot the relationship between 'x' and 'y' with regression line
+            plt.scatter(x_values[x], y_values)
+            plt.plot(x_values[x], model.predict(x_values), color='red')
+
+            # Customize the plot
+            plt.title(f"Relationship between {x} and {y}")
+            plt.xlabel(x)
+            plt.ylabel(y)
+
+            # Show the plot
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()

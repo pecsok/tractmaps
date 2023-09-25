@@ -365,3 +365,57 @@ def run_linear_regression(df, x, y, separate_by_group=False, group_column=None, 
             plt.grid(True)
             plt.tight_layout()
             plt.show()
+
+### plot individual tract results (null + empirical) #####
+def plot_density(map_name, tract, result_value, density_color):
+    
+    # Load the nulls CSV file based on map_name
+    nulls_file = f"./outputs/statistical_testing/nulls_{map_name}.csv"
+    nulls_df = pd.read_csv(nulls_file)
+
+    # Filter rows based on the specified tract_name
+    tract_data = nulls_df[nulls_df['tract_name'] == tract]
+
+    if tract_data.empty:
+        print(f"No data found for tract '{tract}' in map '{map_name}'.")
+        return
+
+    # Load the empirical t-tests CSV file
+    empirical_file = "./outputs/statistical_testing/empirical_t_tests.csv"
+    empirical_df = pd.read_csv(empirical_file)
+    
+    # Filter rows based on tract_name and map_name
+    empirical_data = empirical_df[(empirical_df['tract_name'] == tract) & (empirical_df['map_name'] == map_name)]
+
+    if empirical_data.empty:
+        print(f"No empirical data found for tract '{tract}' in map '{map_name}'.")
+        return
+    
+    # Create a new figure for each plot
+    fig = plt.figure()
+
+    # Create a probability density plot using KDE
+    null_results = tract_data[f'null_{result_value}']
+    sns.kdeplot(null_results, shade = True, color = density_color)
+
+    # Add a vertical line at the empirical mean difference (i.e. for the non-rotated original map)
+    empirical_results = empirical_data[f'empirical_{result_value}'].values[0]
+    plt.axvline(x = empirical_results, color = 'orange', linestyle='--', label = f'Empirical {result_value}')
+    
+    # get FDR corrected p-value
+    fdr_pval = round(empirical_data['fdr_corrected_p_val'].values[0], 3)
+
+    # Add labels and title
+    plt.xlabel(f'{result_value}')
+    plt.ylabel('Probability Density')
+    plt.suptitle(f'Density Plot for Tract {tract} in {map_name}')
+    plt.title(f'FDR corrected p-value: {fdr_pval}')
+    plt.legend()
+
+    # Show the plot
+    plt.show()
+
+    # Save the figure as an image
+    image_path = f'./outputs/statistical_testing/plot_{map_name}_{tract}.png'
+    fig.savefig(image_path)
+    plt.close(fig)

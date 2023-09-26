@@ -1,4 +1,5 @@
 ######### UTILITY FUNCTIONS FOR TRACTMAPS #########
+import os
 import hcp_utils as hcp
 import nilearn.plotting as plotting
 import numpy as np
@@ -6,6 +7,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.api as sm
+from scipy.stats import ttest_ind
+from statistics import mean
+from PIL import Image
+from neuromaps import nulls, images
+import nibabel as nib
 
 # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
 hcp.mmp_short = hcp.mmp
@@ -419,3 +425,271 @@ def plot_density(map_name, tract, result_value, density_color):
     image_path = f'./outputs/statistical_testing/plot_{map_name}_{tract}.png'
     fig.savefig(image_path)
     plt.close(fig)
+    
+
+### Compute empirical results ####
+def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
+    """
+    Compute empirical data for each combination of map and tract.
+
+    Parameters:
+    - maps_list (list): A list of map names to iterate over.
+    - tracts (list): A list of tract names to iterate over.
+    - map_names (list): A list of map names for reference.
+
+    Returns:
+    - result_df (DataFrame): A DataFrame containing computed empirical data with FDR-corrected p-values.
+    """
+    
+    # Initialize an empty list to store DataFrames
+    dfs = []
+    
+    # loop over all selected brain maps
+    for index, mp in enumerate(maps_list):
+
+        # map name
+        map_name = map_names[index]
+        print(f'Running empirical testing for {map_name}...')
+
+        # generate results lists
+        tract_names = [] # tract names
+        tract_size = [] # tract size (i.e., number of connected regions)
+        tracts_mean_map = [] # mean cortical map value across tracts
+        tracts_emps_mean_diffs = [] # empirical results across tracts
+        tracts_emps_t_vals = [] # empirical t-values across tracts
+        tracts_emps_p_vals = [] # empirical p-values across tracts
+
+        # loop over tracts
+        for index, tract in enumerate(tracts):
+    #         print(f'Computing {tract}...')
+
+            ### EMPIRICAL RESULTS FOR EACH MAP AND TRACT ###
+      
+            # select brain region indices
+            tract_regs_idx = tracts_regs_ids.index[tracts_regs_ids[f'{tract}'] > 0.95].tolist()
+
+            # count number of connected regions
+            nb_connected = len(tract_regs_idx)
+
+            # select tract hemisphere
+            if 'left' in tract:
+                hem = 'L_'
+            elif 'right' in tract:
+                hem = 'R_'
+            else:
+                raise ValueError(f"hemisphere not found for: {tract}")
+
+            # select all brain region indices corresponding to the tract's hemisphere
+            hem_all_idx = tracts_regs_ids.index[tracts_regs_ids['parcel_name'].str.contains(f'{hem}')].tolist()
+
+            # create array with map values of connected brain regions
+            connected = [mp[i] for i in tract_regs_idx]
+#             print(f'Number of brain regions structurally connected to the {tract}: {len(connected)}') 
+
+            # create array with map values of non-connected regions (includes regions in both hemispheres)
+#             non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx]
+#             print(f'Number of brain regions NOT structurally connected to the {tract}: {len(non_connected)}') 
+
+            # create array with map values of non-connected regions of the SAME hemisphere as the tract 
+            non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx and i in hem_all_idx]
+
+            # two sample two-tailed t-test to compare the difference of the two distributions (structurally connected vs non-connected regions)
+            empirical_t_statistic, empirical_p_value = ttest_ind(connected, non_connected)
+
+            # compute the difference in the means (will be used for plotting)
+            empirical_mean_diff = mean(connected) - mean(non_connected)
+
+            # Print the results
+#             print(f"{tract} - Empirical T-Statistic:", round(empirical_t_statistic, 3))
+#             print(f"{tract} - Empirical P-Value:", round(empirical_p_value, 3))
+#             print(f"{tract} - Empirical difference in means:", round(empirical_mean_diff, 3))
+
+            # save the results
+            tract_names.append(f'{tract}')
+            tract_size.append(nb_connected)
+            tracts_mean_map.append(round(mean(connected), 3))
+            tracts_emps_mean_diffs.append(round(empirical_mean_diff, 3))
+            tracts_emps_t_vals.append(round(empirical_t_statistic, 3))
+            tracts_emps_p_vals.append(round(empirical_p_value, 3))
+
+        ### STORE MAP RESULTS (ACROSS ALL TRACTS) ###
+
+        # Create a temporary DataFrame for this map
+        map_df = pd.DataFrame({
+            'tract_name': tract_names,
+            'tract_size': tract_size,
+            'cortical_map_mean': tracts_mean_map,
+            'empirical_t_statistic': tracts_emps_t_vals,
+            'empirical_mean_diff': tracts_emps_mean_diffs,
+            'empirical_p_val': tracts_emps_p_vals
+        })
+
+        # Add a map_name column to the temporary DataFrame
+        map_df['map_name'] = map_name
+
+        # Append the temporary DataFrame to the list of DataFrames
+        dfs.append(map_df)
+
+    # Concatenate the list of DataFrames into one DataFrame
+    result_df = pd.concat(dfs, ignore_index=True)
+
+    # Apply FDR correction
+    _, pvals_corrected, _, _ = sm.stats.multipletests(result_df['empirical_p_val'], alpha=0.05, method='fdr_bh')
+
+    # Replace the original 'P_Value' column with the corrected values
+    result_df['fdr_corrected_p_val'] = pvals_corrected
+
+    # Write the result to a CSV file
+    result_df.to_csv(f'./outputs/statistical_testing/empirical_t_tests.csv', index=False, header=True)
+
+    print('Done!')
+    return result_df  
+
+
+### Compute null distribution ###
+def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids):
+    """
+    Compute null data for each combination of map and tract.
+
+    Parameters:
+    - maps_list (list): A list of map names to iterate over.
+    - tracts (list): A list of tract names to iterate over.
+    - map_names (list): A list of map names for reference.
+
+    Returns:
+    - null_map_dict (dict): A dictionary containing null DataFrames for each map_name.
+    """
+    
+    # Initialize an empty dictionary to store null DataFrames
+    null_map_dict = {}
+    
+    # get Glasser labels
+    lh_glasser = nib.load('./inputs/glasser_360_L.label.gii')
+    rh_glasser = nib.load('./inputs/glasser_360_R.label.gii')
+
+    # generate neuromaps fsLR based Glasser 360 parcellation (needs relabeling to have consecutive region IDs)
+    glasser = images.relabel_gifti((lh_glasser, rh_glasser), background=['Medial_wall'])
+    
+    # loop over all selected brain maps
+    for index, mp in enumerate(maps_list):
+
+        # map name
+        map_name = map_names[index]
+        print(f'Running nulls for {map_name}...')
+
+        # create nulls by shuffling the parcellated map - this gives a new randomly assigned map values (for instance, myelin) for each brain region
+        rotated_maps = nulls.alexander_bloch(mp, atlas = 'fsLR', density = '32k',
+                                        n_perm = 100, seed = 1234, parcellation = glasser)
+
+        # generate results lists
+        tract_names = [] # tract names
+        tracts_nulls_rotated_map_names = [] # rotated null map names
+        nulls_tract_names = [] # tract names for null results
+        tracts_nulls_mean_diffs = [] # null results across tracts
+        tracts_nulls_t_vals = [] # null t-values across tracts
+        tracts_nulls_p_vals = [] # null p-values across tracts
+
+        # loop over tracts
+        for index, tract in enumerate(tracts):
+#             print(f'Computing {tract}...')
+
+            # select brain region indices
+            tract_regs_idx = tracts_regs_ids.index[tracts_regs_ids[f'{tract}'] > 0.95].tolist()
+
+            # count number of connected regions
+            nb_connected = len(tract_regs_idx)
+
+            # select tract hemisphere
+            if 'left' in tract:
+                hem = 'L_'
+            elif 'right' in tract:
+                hem = 'R_'
+            else:
+                raise ValueError(f"hemisphere not found for: {tract}")
+
+            # select all brain region indices corresponding to the tract's hemisphere
+            hem_all_idx = tracts_regs_ids.index[tracts_regs_ids['parcel_name'].str.contains(f'{hem}')].tolist()
+
+            ### NULL RESULTS ###
+
+            # null result lists
+            rotated_map_names = []
+            null_tract_name = []
+            null_t_stats = []
+            null_p_vals = []
+            null_mean_diffs = []
+
+            # generate null distribution (using neuromaps spatial nulls)
+            for map_index, rotated_map in enumerate(rotated_maps.T): # transposing to iterate through columns (i.e. maps)
+
+                if map_index < 100: # loop until the 99th iteration, which corresponds to the 100th and last column
+
+                    # assign rotated map name
+                    rotated_map_name = f'rotated_map_{map_index}'
+
+                    # assign the brain regions as connected vs non-connected for each of the 100 permuted maps (columns), except now the map values have been shuffled
+                    connected = [rotated_maps[i, map_index] for i in tract_regs_idx]
+
+                    # subset non-connected brain regions (includes regions of both hemispheres)
+#                     non_connected = [rotated_maps[i, map_index] for i in range(len(rotated_maps)) if i not in tract_regs_idx]
+
+                    # subset only non-connected brain regions of the SAME hemisphere as the tract 
+                    non_connected = [rotated_maps[i, map_index] for i in range(len(rotated_maps)) if i not in tract_regs_idx and i in hem_all_idx]
+
+#                     print(f'Number of brain regions structurally connected to the tract : {len(connected)}') 
+#                     print(f'Number of brain regions NOT structurally connected to the tract: {len(non_connected)}') 
+
+                    # two sample two-tailed t-test to compare the difference of the two distributions (structurally connected vs non-connected regions)
+                    t_statistic, p_value = ttest_ind(connected, non_connected)
+
+                    # compute the difference in the means (will be used for plotting)
+                    mean_diff = mean(connected) - mean(non_connected)
+
+                    # print the results
+#                     print(f'Map number: {map_index}')
+#                     print("T-Statistic:", round(t_statistic, 3))
+#                     print("P-Value:", round(p_value, 3))
+#                     print("Difference in means:", round(mean_diff, 3))
+
+                    # save the results (for each tract x null map)
+                    rotated_map_names.append(f'{rotated_map_name}')
+                    null_tract_name.append(f'{tract}')
+                    null_t_stats.append(round(t_statistic, 3))
+                    null_p_vals.append(round(p_value, 3))
+                    null_mean_diffs.append(round(mean_diff, 3))
+
+            # save the null results (across tracts)
+            tracts_nulls_rotated_map_names.extend(rotated_map_names)
+            nulls_tract_names.extend(null_tract_name)
+            tracts_nulls_t_vals.extend(null_t_stats)
+            tracts_nulls_p_vals.extend(null_p_vals)
+            tracts_nulls_mean_diffs.extend(null_mean_diffs)
+
+        ### STORE MAP RESULTS (ACROSS ALL TRACTS) ###
+
+        # create a temporary null DataFrame for this map
+        null_map_df = pd.DataFrame({
+            'tract_name': nulls_tract_names,
+            'rotated_map_name': tracts_nulls_rotated_map_names,
+            'null_t_statistic': tracts_nulls_t_vals, 
+            'null_mean_diff': tracts_nulls_mean_diffs,
+            'null_p_val': tracts_nulls_p_vals,
+        })
+
+        null_map_df['map_name'] = map_name
+
+        # create outputs folder if doesn't yet exist
+        outputs_folder = './outputs/statistical_testing'
+        if not os.path.exists(outputs_folder):
+            os.makedirs(outputs_folder)
+
+        # write as csv
+        null_map_df.to_csv(f'./outputs/statistical_testing/nulls_{map_name}.csv', index = False, header = True)
+        
+         # Add the null_map_df to the dictionary with the map_name as the key
+        null_map_dict[map_name] = null_map_df
+
+    print('Done!')
+    return null_map_dict
+
+    

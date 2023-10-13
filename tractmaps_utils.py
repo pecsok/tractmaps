@@ -12,6 +12,8 @@ from statistics import mean
 from PIL import Image
 from neuromaps import nulls, images
 import nibabel as nib
+from matplotlib.gridspec import GridSpec
+
 
 # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
 hcp.mmp_short = hcp.mmp
@@ -258,7 +260,7 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     plt.figure(figsize=(20, 2))  # Adjust the width and height as needed
 
     # Create a mask to hide non-significant values
-    mask = result_df.pivot_table(index= brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
+    mask = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
 
     # define a custom colormap
     colormap = sns.diverging_palette(220, 10, as_cmap = True)
@@ -547,7 +549,7 @@ def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
 
 
 ### Compute null distribution ###
-def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids):
+def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
     """
     Compute null data for each combination of map and tract.
 
@@ -555,6 +557,9 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids):
     - maps_list (list): A list of map names to iterate over.
     - tracts (list): A list of tract names to iterate over.
     - map_names (list): A list of map names for reference.
+    - tract_regs_ids (dataframe): A dataframe of Glasser parcels (rows) by tracts (columns).
+    - parcellation (tuple): A tuple of 2 gifti objects contains left and right hemisphere Glasser labels 
+                            (where each gifti contains an array of 32492 vertices with assigned labels).
 
     Returns:
     - null_map_dict (dict): A dictionary containing null DataFrames for each map_name.
@@ -563,12 +568,12 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids):
     # Initialize an empty dictionary to store null DataFrames
     null_map_dict = {}
     
-    # get Glasser labels
-    lh_glasser = nib.load('./inputs/glasser_360_L.label.gii')
-    rh_glasser = nib.load('./inputs/glasser_360_R.label.gii')
+#     # get Glasser labels
+#     lh_glasser = nib.load('./inputs/glasser_360_L.label.gii')
+#     rh_glasser = nib.load('./inputs/glasser_360_R.label.gii')
 
-    # generate neuromaps fsLR based Glasser 360 parcellation (needs relabeling to have consecutive region IDs)
-    glasser = images.relabel_gifti((lh_glasser, rh_glasser), background=['Medial_wall'])
+#     # generate neuromaps fsLR based Glasser 360 parcellation (needs relabeling to have consecutive region IDs)
+#     glasser = images.relabel_gifti((lh_glasser, rh_glasser), background=['Medial_wall'])
     
     # loop over all selected brain maps
     for index, mp in enumerate(maps_list):
@@ -579,7 +584,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids):
 
         # create nulls by shuffling the parcellated map - this gives a new randomly assigned map values (for instance, myelin) for each brain region
         rotated_maps = nulls.alexander_bloch(mp, atlas = 'fsLR', density = '32k',
-                                        n_perm = 100, seed = 1234, parcellation = glasser)
+                                        n_perm = 100, seed = 1234, parcellation = parcellation)
 
         # generate results lists
         tract_names = [] # tract names
@@ -692,4 +697,112 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids):
     print('Done!')
     return null_map_dict
 
+### Display tract, map gradients and tract mean, SD #####
+def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap = 'viridis'):
     
+    '''
+    Create a horizontal bar with a color gradient and standard deviation indicators.
+
+    Parameters
+    -----------
+    ax : matplotlib.axes._subplots.AxesSubplot
+        The axes on which to create the bar.
+   maps_list : list of numpy.ndarray 
+       A list of data arrays for which statistics are calculated and displayed.
+    map_name : str
+        The name of the map to be displayed.
+    colormap : str, optional
+        The name of the colormap to use for the color gradient. Default is 'viridis'.
+
+    Returns
+    --------
+    plot : The function generates a grid of horizontal bar plots.
+    '''
+    ### Define tract information ###
+
+    # select brain region indices
+    tract_regs_idx = tracts_regs_ids.index[tracts_regs_ids[f'{tract}'] > 0.95].tolist()
+    
+    # select tract hemisphere
+    if 'left' in tract:
+        hem = 'L_'
+        hem_folder = 'left_hem'
+    elif 'right' in tract:
+        hem = 'R_'
+        hem_folder = 'right_hem'
+    else:
+        raise ValueError(f"hemisphere not found for: {tract}")
+    
+    ### Set up plotting grid ###
+    
+    num_rows = len(maps_list)
+    num_columns = 2
+    
+    # Calculate the figure height based on the number of rows
+    fig_height = num_rows * 1.2  # Adjust the multiplier as needed for desired visual output
+
+    # Create a grid with n rows and 2 columns
+    fig = plt.figure(figsize=(12, fig_height))
+    gs = GridSpec(num_rows, num_columns, width_ratios=[1, 2])
+
+    # Load the JPG image
+    tract_files = pd.read_csv('./inputs/tract_labels.csv')
+    filename = tract_files[tract_files['tract_names'] == tract]['file_names'].iloc[0]
+    image_path = f'./tracts_figures/{hem_folder}/{filename}'
+    img = plt.imread(image_path)
+
+    # Add the JPG tract image to the left column (spanning all n rows)
+    ax_img = plt.subplot(gs[:, 0])
+    ax_img.imshow(img)
+    ax_img.axis('off')
+    
+    # generate gradient plot for all brain maps
+    for i, mp in enumerate(maps_list):
+        
+        # define map name
+        map_name = map_names[i]
+
+        # create array with map values of connected brain regions
+        connected = [mp[reg_id] for reg_id in tract_regs_idx]
+        
+        # Calculate mean and SD of connected regions
+        mean_val = np.mean(connected)
+        std_dev = np.std(connected)
+
+        # Create a gradient color map
+        cmap = plt.get_cmap(colormap)
+        
+        # get range (min and max of the entire brain map) to make gradient
+        min_val = np.min(mp)
+        max_val = np.max(mp)
+
+        # Create a range of values for the color gradient
+        gradient_values = np.linspace(min_val, max_val, 1000)
+
+        # Create a horizontal bar with a gradient of colors
+        ax_bar = plt.subplot(gs[i, 1])
+        ax_bar.imshow([gradient_values], cmap = cmap, aspect = 'auto', extent = [min_val, max_val, 0, 1])
+
+        # Add a vertical black line for the mean
+        ax_bar.axvline(x = mean_val, color = 'indigo', linestyle = '-', linewidth = 5)
+
+        # Calculate the confidence interval boundaries
+        lower_bound = mean_val - std_dev
+        upper_bound = mean_val + std_dev
+
+        # Plot the standard deviation as two vertical gray lines
+        ax_bar.axvline(x = lower_bound, color = 'tab:purple', linestyle = '-', linewidth = 4)
+        ax_bar.axvline(x = upper_bound, color = 'tab:purple', linestyle = '-', linewidth = 4)
+
+        # Set the x-axis limits and label
+        ax_bar.set_xlim(min_val, max_val)
+        ax_bar.set_xlabel('map values')
+        ax_bar.set_title(f'{map_name}')
+
+        # Remove y-axis labels and ticks
+        ax_bar.set_yticks([])
+        ax_bar.set_yticklabels([])
+
+    plt.tight_layout()
+    plt.show()
+

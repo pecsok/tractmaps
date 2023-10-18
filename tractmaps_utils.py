@@ -11,18 +11,96 @@ from scipy.stats import ttest_ind
 from statistics import mean
 from PIL import Image
 from neuromaps import nulls, images
+from neuromaps.datasets import fetch_annotation
 import nibabel as nib
 from matplotlib.gridspec import GridSpec
 
 
-# subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
-hcp.mmp_short = hcp.mmp
-hcp.mmp_short.map_all = hcp.mmp.map_all[(hcp.mmp.map_all >= 0) & (hcp.mmp.map_all <= 360)]
-hcp.mmp_short.labels = subset_dict = {key: hcp.mmp.labels[key] for key in list(hcp.mmp.labels.keys())[:361]}
-hcp.mmp_short.ids = hcp.mmp.ids[0:361]
-hcp.mmp_short.ids = hcp.mmp.ids[0:361]
-hcp.mmp_short.nontrivial_ids = hcp.mmp.nontrivial_ids[0:361]
-hcp.mmp_short.rgba = subset_dict = {key: hcp.mmp.rgba[key] for key in list(hcp.mmp.rgba.keys())[:361]}
+### Load a list of cortical maps from Neuromaps ###
+def load_surface_maps(maps_list = None, maps_names = None):
+    
+    """
+    Load surface maps into a dictionary.
+
+    Parameters:
+        maps_list (list, optional): A list of loaded surface maps. Default is None (default list of maps is loaded from a csv).
+        maps_names (list, optional): A list of map names corresponding to the loaded maps. Default is None (default list of map names is loaded from a csv).
+
+    Returns:
+        dict: A dictionary where keys are map names and values are the loaded maps based on the list.
+
+    Description:
+    This function loads surface maps into a dictionary. By default, it loads maps from a local CSV file (./inputs/selected_neuromaps.csv), 
+    using 'annotation' as the map list and 'name' as the map names. Alternatively, the user can provide custom lists for maps_list and maps_names. 
+    The function verifies that the provided lists have matching lengths and returns a dictionary with map names as keys and the corresponding loaded maps as values.
+    
+    """
+    
+    #initalize dict to store maps
+    neuromap_dict = {}
+    
+    if maps_list is not None:
+         # Check if the user-provided list is a list of tuples with 5 elements
+        if not all(isinstance(row, tuple) and len(row) == 4 for row in maps_list):
+            print("Error: User-provided list should be a list of tuples with 4 elements each.")
+            selected_maps = []
+            
+        # Check that maps_names exists
+        if maps_names is None:
+            print("Error: when maps_list is provided, corresponding maps_names must be provided as well for each brain map.")
+            return None
+        else:
+            # Check if user-provided arguments are lists and have matching lengths
+            if not isinstance(maps_list, list) or not isinstance(maps_names, list) or not len(maps_list) == len(maps_names):
+                print("Error: maps_list and maps_names must be lists and must have the same length.")
+                return None
+    
+    # if no maps list provided, load neuromaps csv
+    else:
+        
+        # Load the default CSV into a DataFrame
+        all_neuromaps = pd.read_csv('./inputs/selected_neuromaps.csv')
+        
+        # If maps_names are provided, load them from the csv
+        if maps_names is not None:
+            all_neuromaps[all_neuromaps['use'] == 1]['annotation']
+            
+            # Filter the DataFrame based on 'name' column matching maps_names
+            selected_maps = all_neuromaps.loc[all_neuromaps['name'].isin(maps_names)]
+            
+            maps_list = selected_maps['annotation'].apply(lambda x: tuple(word.strip("()''") for word in x.split(', '))).tolist()
+            maps_names = selected_maps['name'].tolist()
+        
+        # if no maps list and map names are provided, load default selected maps from csv
+        else:
+    
+            # Filter rows based on the 'use' column (where 1 means we definitely want to use the map); save as a list of tuples
+            maps_list = all_neuromaps[all_neuromaps['use'] == 1]['annotation'].apply(lambda x: tuple(word.strip("()''") for word in x.split(', '))).tolist()
+            
+            # use this filter to include additional maps (defined as == 2, i.e. "maybe")
+            # selected_maps = all_neuromaps[all_neuromaps['use'].isin([1, 2])][['name', 'annotation']].apply(lambda x: tuple(word.strip("()''") for word in x.split(', '))).tolist()
+            
+            # select map names
+            maps_names = all_neuromaps[all_neuromaps['use'] == 1]['name'].tolist()      
+        
+    # Generate a dictionary with maps_names as keys and maps_list as values
+    annotations_dict = dict(zip(maps_names, maps_list))
+
+    # fetch maps
+    for map_name, annotation in annotations_dict.items():
+        print(f'Map: {map_name}, Annotation: {annotation}')
+        
+        # fetch the map using Neuromaps
+        fetched_map = fetch_annotation(source = annotation[0], 
+                                       desc = annotation[1],
+                                       space = annotation[2], 
+                                       den = annotation[3])
+        
+        # store fetched maps and corresponding names in results dictionary
+        neuromap_dict[map_name] = {'annotation': annotation, 
+                                   'map': fetched_map}
+        
+    return neuromap_dict
 
 
 ### Plot parcellated brain map ###
@@ -49,7 +127,16 @@ def plot_parc_map(brain_map, map_name, colors, hemisphere = None, mode = 'intera
     
     """
     
-    # assign brain map values of each parcels to correspinding vertices on full brain surface
+    # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
+    hcp.mmp_short = hcp.mmp
+    hcp.mmp_short.map_all = hcp.mmp.map_all[(hcp.mmp.map_all >= 0) & (hcp.mmp.map_all <= 360)]
+    hcp.mmp_short.labels = subset_dict = {key: hcp.mmp.labels[key] for key in list(hcp.mmp.labels.keys())[:361]}
+    hcp.mmp_short.ids = hcp.mmp.ids[0:361]
+    hcp.mmp_short.ids = hcp.mmp.ids[0:361]
+    hcp.mmp_short.nontrivial_ids = hcp.mmp.nontrivial_ids[0:361]
+    hcp.mmp_short.rgba = subset_dict = {key: hcp.mmp.rgba[key] for key in list(hcp.mmp.rgba.keys())[:361]}
+    
+    # assign brain map values of each parcels to corresponding vertices on full brain surface
     unparcellated_map = hcp.unparcellate(brain_map, hcp.mmp_short)
     
     if mode == 'static' and hemisphere is None:
@@ -78,7 +165,7 @@ def plot_parc_map(brain_map, map_name, colors, hemisphere = None, mode = 'intera
         plotting.plot_surf(brain_mesh,
                            input_parc_map,
                            cmap = colors,
-        #                    colorbar = True, # this gets placed on top of the brain surface, would need fixing if want to display colorbar
+#                            colorbar = True, # this gets placed on top of the brain surface, would need fixing if want to display colorbar
                            vmin = np.min(brain_map),
                            vmax = np.max(brain_map),
                            symmetric_cmap = False,
@@ -91,7 +178,7 @@ def plot_parc_map(brain_map, map_name, colors, hemisphere = None, mode = 'intera
         plotting.plot_surf(brain_mesh,
                            input_parc_map,
                            cmap = colors,
-        #                   colorbar = True,
+#                           colorbar = True,
                            vmin = np.min(brain_map),
                            vmax = np.max(brain_map),
                            symmetric_cmap = False,
@@ -153,6 +240,16 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
     plot : nilearn interactive or static plot showing map values for a subset of structurally connected brain parcels.
     
     """
+    
+    # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
+    hcp.mmp_short = hcp.mmp
+    hcp.mmp_short.map_all = hcp.mmp.map_all[(hcp.mmp.map_all >= 0) & (hcp.mmp.map_all <= 360)]
+    hcp.mmp_short.labels = subset_dict = {key: hcp.mmp.labels[key] for key in list(hcp.mmp.labels.keys())[:361]}
+    hcp.mmp_short.ids = hcp.mmp.ids[0:361]
+    hcp.mmp_short.ids = hcp.mmp.ids[0:361]
+    hcp.mmp_short.nontrivial_ids = hcp.mmp.nontrivial_ids[0:361]
+    hcp.mmp_short.rgba = subset_dict = {key: hcp.mmp.rgba[key] for key in list(hcp.mmp.rgba.keys())[:361]}
+
     # read in csv with tracts and Glasser region IDs
     tracts_regs_ids = pd.read_csv('./outputs/tracts_regs_Glasser.csv')
 
@@ -257,7 +354,7 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     pivot_df = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = result_value_col)
 
     # Create a wider heatmap
-    plt.figure(figsize=(20, 2))  # Adjust the width and height as needed
+    plt.figure(figsize=(20, 4))  # Adjust the width and height as needed
 
     # Create a mask to hide non-significant values
     mask = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
@@ -567,13 +664,6 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
     
     # Initialize an empty dictionary to store null DataFrames
     null_map_dict = {}
-    
-#     # get Glasser labels
-#     lh_glasser = nib.load('./inputs/glasser_360_L.label.gii')
-#     rh_glasser = nib.load('./inputs/glasser_360_R.label.gii')
-
-#     # generate neuromaps fsLR based Glasser 360 parcellation (needs relabeling to have consecutive region IDs)
-#     glasser = images.relabel_gifti((lh_glasser, rh_glasser), background=['Medial_wall'])
     
     # loop over all selected brain maps
     for index, mp in enumerate(maps_list):

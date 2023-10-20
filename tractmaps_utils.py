@@ -7,11 +7,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.api as sm
-from scipy.stats import ttest_ind
+from scipy import stats as sstats
 from statistics import mean
 from PIL import Image
 from neuromaps import nulls, images
 from neuromaps.datasets import fetch_annotation
+from neuromaps.parcellate import Parcellater
 import nibabel as nib
 from matplotlib.gridspec import GridSpec
 
@@ -101,6 +102,108 @@ def load_surface_maps(maps_list = None, maps_names = None):
                                    'map': fetched_map}
         
     return neuromap_dict
+
+### Get Glasser parcellation ###
+def get_glasser(lh_glasser = None, rh_glasser = None):
+    """
+    Generate GIFTI objects for the left and right hemispheres with optional custom input data.
+
+    This function creates GIFTI objects for the left and right hemispheres using the Glasser atlas labels and data. GIFTI objects are outputted as a tuple. 
+    
+    Args:
+        lh_glasser (optional): GIFTI object for the left hemisphere. If provided, custom data will be used for the left hemisphere.
+        rh_glasser (optional): GIFTI object for the right hemisphere. If provided, custom data will be used for the right hemisphere.
+    
+    Returns:
+        tuple: A tuple containing GIFTI objects for the left and right hemispheres.
+
+    If custom GIFTI objects are not provided, the function generates GIFTI objects based on the Glasser atlas labels and data.
+
+    Example Usage:
+        glasser = get_glasser()
+    """
+    
+    # select region labels
+    labels = list(hcp.mmp.labels.values())
+
+    # redefine the medial wall label to match one of the elements in PARCIGNORE (required for generating spin samples in the alexander_bloch nulls function)
+    # PARCIGNORE = ['unknown', 'corpuscallosum', 'Background+FreeSurfer_Defined_Medial_Wall','???', 'Unknown', 'Medial_wall', 'Medial wall', 'medial_wall']
+    labels[0] = 'medial_wall'
+
+    # select left and right hemisphere labels
+    lh_labels = labels[0:181] # the first 0-180 are unassigned (0) and 1-180 are lh labels
+    rh_labels = [labels[0]]  + labels[181:361] # the first (0) unassigned label and 181-360 are rh labels
+    
+    # if left and right data are not provided, use the hcp glasser data
+    if lh_glasser is None:
+        # Transform array of glasser labels in grayordinates (hcp.mmp.map_all, size=59412) to labels in vertices (size=32492). 
+        # The unused vertices are filled with a constant (zero by default). Order is Left, Right hemisphere.
+        lh_glasser_verts = hcp.left_cortex_data(hcp.mmp.map_all)
+        
+        # create gifti
+        lh_glasser = images.construct_shape_gii(lh_glasser_verts, labels = lh_labels,
+                                           intent = 'NIFTI_INTENT_LABEL')
+        
+    if rh_glasser is None:
+        rh_glasser_verts = hcp.right_cortex_data(hcp.mmp.map_all)
+        rh_glasser = images.construct_shape_gii(rh_glasser_verts, labels = rh_labels,
+                                       intent = 'NIFTI_INTENT_LABEL')
+
+    # if needed, update GIFTI images so label IDs are consecutive across hemispheres
+    # glasser = images.relabel_gifti((lh_glasser, rh_glasser))
+    
+    # create tuple of left and right hemisphere GIFTI images
+    glasser = (lh_glasser, rh_glasser)
+    
+    return glasser
+
+### Apply Glasser parcellation to cortical maps ###
+def glasserize(cortical_maps, zscore = True):
+    """
+    Parcellate cortical maps using the Glasser parcellation and store the parcellated maps in a dictionary.
+
+    Args:
+        cortical_maps (dict): A dictionary of cortical maps to be parcellated.
+        zscore (bool, optional): Whether to z-score the cortical maps. Defaults to True.
+
+    Returns:
+        dict: A dictionary containing the parcellated maps.
+    """
+    
+    # get glasser object (a tuple containing Glasser labels as GIFTI objects for the left and right hemispheres)
+    glasser = get_glasser()
+    
+    # create parcellater object
+    glasser_parc = Parcellater(parcellation = glasser,
+                               space = 'fsLR', # space in which the parcellation is defined
+                               resampling_target = 'parcellation') # cortical maps provided later will be resampled to the space + resolution of the data, if needed
+    # glasser_parc.parcellation[0].darrays[0] #.data
+
+    
+    # Dictionary to store parcellated maps
+    glasser_maps = {}  
+
+    for map_name, value in cortical_maps.items():
+        print(f'Map: {map_name}')
+
+        # Apply Glasser parcellation to the map
+        parcellated_map = glasser_parc.fit_transform(data=value['map'], space=value['annotation'][2])
+
+        # Z-score the map if zscore is True
+        if zscore:
+            parcellated_map = sstats.zscore(parcellated_map, nan_policy = 'omit')
+
+        # Assign the parcellated map to the new dictionary
+        glasser_maps[f'{map_name}_glasser'] = parcellated_map
+
+        # Load non-parcellated maps to compute stats for comparison with parcellated maps
+        data = images.load_data(value['map'])
+        print(f'Original map shape: {data.shape}, parcellated shape: {parcellated_map.shape}')
+#         print(f' Min original value: {np.min(data)}, min parcellated: {np.min(parcellated_map)}', 
+#               f'\n Mean value: {np.mean(data)}, mean parcellated: {np.mean(parcellated_map)}', 
+#               f'\n Max value: {np.max(data)}, max parcellated: {np.max(parcellated_map)}')  
+
+    return glasser_maps
 
 
 ### Plot parcellated brain map ###
@@ -593,7 +696,7 @@ def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
             non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx and i in hem_all_idx]
 
             # two sample two-tailed t-test to compare the difference of the two distributions (structurally connected vs non-connected regions)
-            empirical_t_statistic, empirical_p_value = ttest_ind(connected, non_connected)
+            empirical_t_statistic, empirical_p_value = sstats.ttest_ind(connected, non_connected)
 
             # compute the difference in the means (will be used for plotting)
             empirical_mean_diff = mean(connected) - mean(non_connected)
@@ -735,7 +838,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
 #                     print(f'Number of brain regions NOT structurally connected to the tract: {len(non_connected)}') 
 
                     # two sample two-tailed t-test to compare the difference of the two distributions (structurally connected vs non-connected regions)
-                    t_statistic, p_value = ttest_ind(connected, non_connected)
+                    t_statistic, p_value = sstats.ttest_ind(connected, non_connected)
 
                     # compute the difference in the means (will be used for plotting)
                     mean_diff = mean(connected) - mean(non_connected)
@@ -829,7 +932,7 @@ def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap =
     num_columns = 2
     
     # Calculate the figure height based on the number of rows
-    fig_height = num_rows * 1.2  # Adjust the multiplier as needed for desired visual output
+    fig_height = num_rows * 1.1  # Adjust the multiplier as needed for desired visual output
 
     # Create a grid with n rows and 2 columns
     fig = plt.figure(figsize=(12, fig_height))

@@ -302,7 +302,7 @@ def plot_parc_map(brain_map, map_name, colors, hemisphere = None, mode = 'intera
         # create full cortex array for plotting
         input_parc_map = hcp.cortex_data(unparcellated_map) 
 
-        # assign nan to medial wall
+        # assign nan to medial wallnulls_filenulls_file
         input_parc_map[input_parc_map == 0] = np.nan 
         
         return plotting.view_surf(hcp.mesh.inflated,
@@ -577,6 +577,27 @@ def run_linear_regression(df, x, y, separate_by_group=False, group_column=None, 
 ### plot individual tract results (null + empirical) #####
 def plot_density(map_name, tract, result_value, density_color):
     
+    """
+    Plots the probability density for a specified tract and map's results, including null and empirical data.
+
+    Parameters:
+    - map_name (str): Name of the map being analyzed.
+    - tract (str): Name of the tract for which results are plotted.
+    - result_value (str): Name of the result value to be plotted. 
+        Options are 't_statistic' for the t-values of the t-test, or 'mean_diff' for the difference of the means. 
+    - density_color (str): Color for the probability density plot.
+
+    The function loads null and empirical data from CSV files, filters the data based on the specified
+    map_name and tract, and then creates a density plot using Kernel Density Estimation (KDE) for the
+    null data. It also adds a vertical line at the empirical mean difference and displays the FDR-corrected
+    p-value on the plot. The resulting plot is both displayed and saved as an image.
+
+    Example Usage:
+    
+    plot_density("Map_A", "Tract_X", "t_statistic", "skyblue")
+    
+    """
+    
     # Load the nulls CSV file based on map_name
     nulls_file = f"./outputs/statistical_testing/nulls_{map_name}.csv"
     nulls_df = pd.read_csv(nulls_file)
@@ -627,7 +648,44 @@ def plot_density(map_name, tract, result_value, density_color):
     image_path = f'./outputs/statistical_testing/plot_{map_name}_{tract}.png'
     fig.savefig(image_path)
     plt.close(fig)
+
+### Calculate effect size (Cohen's d or Hedge's g) for independent samples ###
+def effsize(group1, group2, metric = 'cohen'):
+    """
+    Calculate the effect size between two groups.
+
+    Parameters:
+    - group1: List or array containing data for the first group.
+    - group2: List or array containing data for the second group.
+    - metric: A string specifying the effect size metric ('cohen' or 'hedge').
+
+    Returns:
+    - effect_size: The calculated effect size based on the chosen metric.
+        If 'metric' is set to 'cohen', the function uses Cohen's d to calculate the effect size, which is suitable for comparing groups of equal size.
+        If 'metric' is set to 'hedge', the function uses Hedges' g to calculate the effect size, which is more robust when dealing with groups of unequal size.
+
+    """
     
+    # calculate the size of samples
+    n1, n2 = len(group1), len(group2)
+    
+    # calculate the variance of the samples
+    s1, s2 = np.var(group1, ddof = 1), np.var(group2, ddof = 1)
+    
+    # calculate the pooled standard deviation
+    s = np.sqrt(((n1 - 1) * s1 + (n2 - 1) * s2) / (n1 + n2 - 2))
+    
+    # calculate the means of the samples
+    u1, u2 = np.mean(group1), np.mean(group2)
+    
+    # calculate the effect size
+    if metric == 'cohen':
+        effect_size = (u1 - u2) / s
+    
+    elif metric == 'hedge':
+        effect_size = (u1 - u2) / s * (1 - 3 / (4 * (n1 + n2) - 9))
+    
+    return effect_size
 
 ### Compute empirical results ####
 def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
@@ -656,10 +714,13 @@ def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
         # generate results lists
         tract_names = [] # tract names
         tract_size = [] # tract size (i.e., number of connected regions)
-        tracts_mean_map = [] # mean cortical map value across tracts
+        tracts_mean_connected = [] # mean cortical value in connected regions across tracts
+        tracts_mean_unconnected = [] # mean cortical value in unconnected regions across
         tracts_emps_mean_diffs = [] # empirical results across tracts
         tracts_emps_t_vals = [] # empirical t-values across tracts
+        tracts_emps_effsize = [] # effect sizes across tracts
         tracts_emps_p_vals = [] # empirical p-values across tracts
+
 
         # loop over tracts
         for index, tract in enumerate(tracts):
@@ -700,6 +761,9 @@ def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
 
             # compute the difference in the means (will be used for plotting)
             empirical_mean_diff = mean(connected) - mean(non_connected)
+            
+            # compute effect size (Hedges' g as the samples are of unequal size)
+            effect_size = effsize(group1 = connected, group2 = non_connected, metric = 'hedge')
 
             # Print the results
 #             print(f"{tract} - Empirical T-Statistic:", round(empirical_t_statistic, 3))
@@ -709,9 +773,11 @@ def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
             # save the results
             tract_names.append(f'{tract}')
             tract_size.append(nb_connected)
-            tracts_mean_map.append(round(mean(connected), 3))
+            tracts_mean_connected.append(round(mean(connected), 3))
+            tracts_mean_unconnected.append(round(mean(non_connected), 3))
             tracts_emps_mean_diffs.append(round(empirical_mean_diff, 3))
             tracts_emps_t_vals.append(round(empirical_t_statistic, 3))
+            tracts_emps_effsize.append(round(effect_size, 3))
             tracts_emps_p_vals.append(round(empirical_p_value, 3))
 
         ### STORE MAP RESULTS (ACROSS ALL TRACTS) ###
@@ -720,10 +786,13 @@ def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
         map_df = pd.DataFrame({
             'tract_name': tract_names,
             'tract_size': tract_size,
-            'cortical_map_mean': tracts_mean_map,
+            'connected_mean': tracts_mean_connected,
+            'unconnected_mean': tracts_mean_unconnected,
             'empirical_t_statistic': tracts_emps_t_vals,
             'empirical_mean_diff': tracts_emps_mean_diffs,
+            'empirical_effect_size': tracts_emps_effsize,
             'empirical_p_val': tracts_emps_p_vals
+           
         })
 
         # Add a map_name column to the temporary DataFrame
@@ -786,6 +855,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
         tracts_nulls_mean_diffs = [] # null results across tracts
         tracts_nulls_t_vals = [] # null t-values across tracts
         tracts_nulls_p_vals = [] # null p-values across tracts
+        tracts_nulls_effsizes = [] # null effect sizes across tracts
 
         # loop over tracts
         for index, tract in enumerate(tracts):
@@ -816,6 +886,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
             null_t_stats = []
             null_p_vals = []
             null_mean_diffs = []
+            null_effsizes = []
 
             # generate null distribution (using neuromaps spatial nulls)
             for map_index, rotated_map in enumerate(rotated_maps.T): # transposing to iterate through columns (i.e. maps)
@@ -842,6 +913,9 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
 
                     # compute the difference in the means (will be used for plotting)
                     mean_diff = mean(connected) - mean(non_connected)
+                    
+                    # compute effect size (Hedges' g as the samples are of unequal size)
+                    effect_size = effsize(group1 = connected, group2 = non_connected, metric = 'hedge')
 
                     # print the results
 #                     print(f'Map number: {map_index}')
@@ -855,6 +929,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
                     null_t_stats.append(round(t_statistic, 3))
                     null_p_vals.append(round(p_value, 3))
                     null_mean_diffs.append(round(mean_diff, 3))
+                    null_effsizes.append(round(effect_size, 3))
 
             # save the null results (across tracts)
             tracts_nulls_rotated_map_names.extend(rotated_map_names)
@@ -862,6 +937,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
             tracts_nulls_t_vals.extend(null_t_stats)
             tracts_nulls_p_vals.extend(null_p_vals)
             tracts_nulls_mean_diffs.extend(null_mean_diffs)
+            tracts_nulls_effsizes.extend(null_effsizes)
 
         ### STORE MAP RESULTS (ACROSS ALL TRACTS) ###
 
@@ -871,6 +947,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
             'rotated_map_name': tracts_nulls_rotated_map_names,
             'null_t_statistic': tracts_nulls_t_vals, 
             'null_mean_diff': tracts_nulls_mean_diffs,
+            'null_effect_size': tracts_nulls_effsizes,
             'null_p_val': tracts_nulls_p_vals,
         })
 

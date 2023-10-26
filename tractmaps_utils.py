@@ -450,17 +450,25 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
 
 
 ##### Generate a custom heatmap #######
-def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_col, significance_threshold = 0.05, cmap = 'coolwarm', title = None):
+def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_col, significance_threshold = 0.05,  row_order = None, cmap = 'coolwarm', title = None):
     
     # pivot the results dataframe
     
     pivot_df = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = result_value_col)
+    
 
     # Create a wider heatmap
     plt.figure(figsize=(20, 4))  # Adjust the width and height as needed
 
     # Create a mask to hide non-significant values
     mask = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
+    
+    # reorder brain maps (rows) if needed
+    if row_order is None:
+        pass
+    else:
+        pivot_df = pivot_df.reindex(index = row_order)
+        mask = mask.reindex(index = row_order)
 
     # define a custom colormap
     colormap = sns.diverging_palette(220, 10, as_cmap = True)

@@ -316,7 +316,7 @@ def plot_parc_map(brain_map, map_name, colors, hemisphere = None, mode = 'intera
                                   title_fontsize = 20)
 
 ### Plot subset of structurally connected regions for a given brain map and tract ###
-def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral', mode = 'interactive', connection_threshold = 0.95):
+def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectral', mode = 'interactive', connection_threshold = 0.95):
     
     """
     Plots a subset of parcellated regions in a `brain_map` using nilearn plotting functions
@@ -325,12 +325,12 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
     ----------
     brain_map : (N,) array_like
         Surface data for N parcels
-    tract: str
-        Name of the tract for which structurally connected brain regions should be displayed. 
+     tracts : str or list of str
+        Name(s) of the tract(s) for which structurally connected brain regions should be displayed. 
     map_name: str
         Name of the brain map that is being plotted (for plot title).
-    tract_name: str
-        Name of the tract name for which structurally connected brain regions are displayed (for plot title).
+    tract_names : str or list of str
+        Name(s) of the tract(s) for which structurally connected brain regions are displayed (for plot title).
     colors: str, optional
         Colormap (from matplotlib default options) used to display brain regions. Default is 'Spectral'.
     mode: str, optional
@@ -343,6 +343,11 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
     plot : nilearn interactive or static plot showing map values for a subset of structurally connected brain parcels.
     
     """
+    # Convert string inputs to list
+    if isinstance(tracts, str):
+        tracts = [tracts]  
+    if isinstance(tract_names, str):
+        tract_names = [tract_names]
     
     # subset hcp Glasser parcellation to only contain cortical regions (remove subcortical areas 361-380)
     hcp.mmp_short = hcp.mmp
@@ -352,28 +357,40 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
     hcp.mmp_short.ids = hcp.mmp.ids[0:361]
     hcp.mmp_short.nontrivial_ids = hcp.mmp.nontrivial_ids[0:361]
     hcp.mmp_short.rgba = subset_dict = {key: hcp.mmp.rgba[key] for key in list(hcp.mmp.rgba.keys())[:361]}
-
+    
+    # Initialize an empty list to store the region IDs
+    region_ids_list = []
+    
     # read in csv with tracts and Glasser region IDs
     tracts_regs_ids = pd.read_csv('./outputs/tracts_regs_Glasser.csv')
+    
+    for tract in tracts:
 
-    # select brain regions structurally connected to the tract
-    tract_df = tracts_regs_ids.loc[tracts_regs_ids[f'{tract}'] >= connection_threshold, ['parcel_name', 'regionLongName', 'cortex', 'regionID']]
+        # select brain regions structurally connected to the tract
+        tract_df = tracts_regs_ids.loc[tracts_regs_ids[f'{tract}'] >= connection_threshold, ['parcel_name', 'regionLongName', 'cortex', 'regionID']]
 
-    # define region IDs of structurally connected regions for the tract
-    region_ids = np.array(tract_df['regionID'].astype('int'))
+        # define region IDs of structurally connected regions for the tract
+        region_ids = np.array(tract_df['regionID'].astype('int'))
+        
+        # append to list of region ids
+        region_ids_list.extend(region_ids)
+    
+    # Ensure the list contains unique region IDs
+    unique_region_ids = sorted(list(set(region_ids_list))) 
 
     # select region ids across full surface map vertices
-    region_ids_all = np.isin(hcp.mmp_short.map_all, region_ids)
+    region_ids_all = np.isin(hcp.mmp_short.map_all, unique_region_ids)
 
-    # assign brain map values of each parcels to correspinding vertices on full brain surface
+    # assign brain map values of each parcels to corresponding vertices on full brain surface
     unparcellated_map = hcp.unparcellate(brain_map, hcp.mmp_short)
     
-    if 'left' in tract:
-        hemisphere = 'left'
-    elif 'right' in tract:
-        hemisphere = 'right'
+    # Check if all strings in the tracts list contain 'left' or 'right'
+    if all(('left' in tract for tract in tracts)) or all(('right' in tract for tract in tracts)):
+        # All tracts contain either 'left' or 'right'
+        hemisphere = 'left' if 'left' in tracts[0] else 'right'  # using the first tract to assign the hemisphere
     else:
-        raise ValueError("The tract must be either 'left' or 'right'.")
+        # Cannot plot a mix of left and right hemisphere tracts; cannot plot tracts without hemisphere label
+        raise ValueError("All tracts must be either 'left' or 'right'.")
     
     # plot regions
     if mode == 'static': # static plot
@@ -421,7 +438,8 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
                           )
 
         # plot title
-        plt.suptitle(f'{map_name} in {len(tract_df)} regions structurally connected to the {tract_name}', fontsize = 13)
+        tract_names = ', '.join(tract_names)
+        plt.suptitle(f'{map_name} in {len(unique_region_ids)} regions connected to {tract_names}', fontsize = 13)
 
         # Adjust layout and display the plots
         plt.tight_layout()
@@ -436,6 +454,7 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
         input_parc_map[input_parc_map == 0]  = np.nan 
 
         # plotting interactive view
+        tract_names = ', '.join(tract_names)
         return plotting.view_surf(hcp.mesh.inflated,
                                   input_parc_map,
                                   cmap = colors,
@@ -443,7 +462,7 @@ def plot_parc_subset(brain_map, tract, map_name, tract_name, colors = 'Spectral'
                                   vmax = np.max(brain_map),
                                   symmetric_cmap = False,
                                   bg_map = hcp.mesh.sulc,
-                                  title = f'{map_name} in {len(tract_df)} regions structurally connected to the {tract_name}',
+                                  title = f'{map_name} in {len(unique_region_ids)} regions connected to {tract_names}',
                                   title_fontsize = 15
                                  )
     
@@ -458,7 +477,8 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     
 
     # Create a wider heatmap
-    plt.figure(figsize=(20, 4))  # Adjust the width and height as needed
+#     plt.figure(figsize=(20, 4))  # Adjust the width and height as needed
+    plt.figure(figsize=(15, 6))
 
     # Create a mask to hide non-significant values
     mask = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
@@ -985,7 +1005,7 @@ def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap =
     -----------
     ax : matplotlib.axes._subplots.AxesSubplot
         The axes on which to create the bar.
-   maps_list : list of numpy.ndarray 
+    maps_list : list of numpy.ndarray 
        A list of data arrays for which statistics are calculated and displayed.
     map_name : str
         The name of the map to be displayed.
@@ -1084,3 +1104,5 @@ def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap =
     plt.tight_layout()
     plt.show()
 
+
+### Radar chart - credit to https://colab.research.google.com/drive/1YftqOtPkJGIKbPqBQtjyZgikx20G7Z0M?usp=sharing#scrollTo=Ktooo9c8yoYN ###

@@ -469,14 +469,16 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
 
 
 ##### Generate a custom heatmap #######
-def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_col, spin_pval_col, significance_threshold = 0.05, row_order = None, cmap = 'coolwarm', title = None):
+def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, p_value_col, spin_pval_col, 
+                     significance_threshold = 0.05, row_order = None, cmap = 'coolwarm', title = None):
     
     # pivot the results dataframe
     pivot_df = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = result_value_col)
     
     # Create a wide heatmap
 #     plt.figure(figsize=(20, 4))
-    plt.figure(figsize=(15, 6))
+#     plt.figure(figsize=(15, 6))
+    plt.figure(figsize=(10, 5))
 
     # Create a mask to hide non-significant values
     model_pval = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col)
@@ -500,7 +502,7 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     colormap = sns.diverging_palette(220, 10, as_cmap = True)
 
     # Create the heatmap with empty white boxes for non-significant values
-    sns.heatmap(pivot_df, mask = mask, cmap = colormap, linewidths = 0.5, linecolor = 'grey') # remove the mask if you want to see all values (including non-significant ones)
+    sns.heatmap(pivot_df, mask = mask, cmap = colormap, linewidths = 0.5, linecolor = 'grey', square = True) # remove the mask if you want to see all values (including non-significant ones)
     
     # Add a title to the heatmap if provided
     if title:
@@ -510,7 +512,13 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     plt.grid(False)
     
     # Show the heatmap
-    plt.show()
+    plt.tight_layout()
+    
+    # save figure
+    plt.savefig(outpath,
+                bbox_inches = 'tight', dpi = 300,
+                transparent = True)
+    
     
     
 ### Run linear regression #####

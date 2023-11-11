@@ -469,19 +469,25 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
 
 
 ##### Generate a custom heatmap #######
-def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_col, significance_threshold = 0.05,  row_order = None, cmap = 'coolwarm', title = None):
+def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_col, spin_pval_col, significance_threshold = 0.05, row_order = None, cmap = 'coolwarm', title = None):
     
     # pivot the results dataframe
-    
     pivot_df = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = result_value_col)
     
-
-    # Create a wider heatmap
-#     plt.figure(figsize=(20, 4))  # Adjust the width and height as needed
+    # Create a wide heatmap
+#     plt.figure(figsize=(20, 4))
     plt.figure(figsize=(15, 6))
 
     # Create a mask to hide non-significant values
-    mask = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col) > significance_threshold
+    model_pval = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col)
+    
+    # get spin p-values (model significance)
+    spin_pval = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = spin_pval_col)
+    
+    # filter out non-significant models (based on spins)
+    model_pval[spin_pval >= 0.05] = 1 # assign to 1 so that it gets filtered out with the mask below
+#     model_pval = multipletests(model_pval, method='fdr_bh')[1] # for additional bonferroni correction
+    mask = model_pval > significance_threshold
     
     # reorder brain maps (rows) if needed
     if row_order is None:
@@ -499,6 +505,9 @@ def generate_heatmap(df, brain_maps_col, tracts_col, result_value_col, p_value_c
     # Add a title to the heatmap if provided
     if title:
         plt.title(title, fontsize = 16)
+    
+    # Turn off the internal grids
+    plt.grid(False)
     
     # Show the heatmap
     plt.show()
@@ -1106,3 +1115,116 @@ def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap =
 
 
 ### Radar chart - credit to https://colab.research.google.com/drive/1YftqOtPkJGIKbPqBQtjyZgikx20G7Z0M?usp=sharing#scrollTo=Ktooo9c8yoYN ###
+
+
+### REGRESSIONS (BRAIN MAP ~ TRACTS) AND SIGNIFICANCE TESTING (SPINS) ####
+import statsmodels.api as sm
+def regression_spins(df, map_names, nspins, testtype, parcellation):
+    
+    # get number of brain maps
+    n_features = len(map_names)
+    
+    ## --- generate spin samples for all brain maps --- ###
+
+    spins_dict = {}
+
+    for iMap in range(n_features):
+        # select brain map values
+        map_name = map_names[iMap]
+
+        # generate spins
+        spins = nulls.alexander_bloch(df[map_name], atlas = 'fsLR', density = '32k', 
+                                             n_perm = nspins, seed = 1234, parcellation = parcellation)
+
+        # save spins
+        spins_dict[map_name] = spins
+
+    ### --- Regression analysis --- ###
+    
+    # list to store the results 
+    results = []
+
+    # dictionary to store null R2 from spins
+    null_rsq = []
+
+    # define test type for model pvalues (based on spins)
+    testtype = 'twotailed'
+
+    # loop over hemispheres
+    for hemisphere in ['Left', 'Right']:
+        print(f'Computing regression for {hemisphere} hemisphere')
+
+        if hemisphere == 'Left':
+            # subset left tract columns
+            tracts = df.filter(regex = 'left').columns
+
+            # Subset rows in dataframe based on 'parcel_name' for left hemisphere
+            hem_subset = df[df['parcel_name'].str.contains('L_')]
+
+        elif hemisphere == 'Right':
+            # subset right tract columns
+            tracts = df.filter(regex = 'right').columns
+
+            # Subset rows in the data DataFrame based on 'parcel_name' for right hemisphere
+            hem_subset = df[df['parcel_name'].str.contains('R_')]
+
+
+        for iMap in range(n_features):        
+
+            # select brain map values
+            map_name = map_names[iMap]
+            spins = spins_dict[map_name]
+
+            ### --- Empirical results --- ###
+
+            # Prepare your X (tracts) and y (brain map) variables
+            X = hem_subset[tracts]
+            X = sm.add_constant(X)  # Add a constant for the intercept
+            y = hem_subset[map_name]
+
+            # Fit the linear regression model
+            reg_model = sm.OLS(y, X).fit()
+            emp_rsquared_adj = reg_model.rsquared_adj
+
+            ### --- Nulls --- ####
+
+            # empty array to store null adjusted R2 from spins for this brain map 
+            null_rsquared_adj = np.zeros((1, nspins))
+
+            for iSpin in range(nspins):
+                X = hem_subset[tracts]
+                X = sm.add_constant(X)
+                spun_map = spins[:, iSpin] # select spun map column
+                y_null = spun_map[hem_subset.index] # select hemisphere brain regions in spun map
+                null_model = sm.OLS(y_null, X).fit()
+                null_rsquared_adj[: ,iSpin] = null_model.rsquared_adj
+
+            # compute p-value (represents the proportion of permuted values that are as extreme or more extreme than the empirical value)
+    #         pvalspin = (1 + sum(null_rsquared_adj > emp_rsquared_adj))/(nspins + 1) # Justine's version (one tailed)
+
+            null_mean = np.mean(null_rsquared_adj)
+
+            if testtype == 'twotailed':
+                pvalspin = (len(np.where(abs(null_rsquared_adj - null_mean) >=
+                                    abs(emp_rsquared_adj - null_mean))[0]) + 1) / (nspins + 1)
+            elif testtype == 'onetailed':
+                pvalspin = (len(np.where(null_rsquared_adj >=
+                                         emp_rsquared_adj)[0]) + 1) / (nspins + 1)
+
+            # Loop over each tract to save results
+            for tract in tracts:
+                results.append({'BrainMap': map_names[iMap], 
+                                'Hemisphere': hemisphere,
+                                'Tract': tract,
+                                'Beta_Coefficient': reg_model.params[tract], 
+                                'P_Value': reg_model.pvalues[tract],
+                                'Adjusted_R2': emp_rsquared_adj,
+                                'Spin_P_Value': pvalspin,
+                                'Null_R2': null_rsquared_adj})
+
+    print('Done!')
+
+    # Create a DataFrame from the list of results
+    regression_df = pd.DataFrame(results)
+    
+    return regression_df

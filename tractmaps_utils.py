@@ -7,6 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.api as sm
+from statsmodels.stats.multitest import multipletests
 from scipy import stats as sstats
 from statistics import mean
 from PIL import Image
@@ -164,7 +165,7 @@ def glasserize(cortical_maps, zscore = True):
 
     Args:
         cortical_maps (dict): A dictionary of cortical maps to be parcellated.
-        zscore (bool, optional): Whether to z-score the cortical maps. Defaults to True.
+        zscore (bool, optional): Whether to z-score the parcellated cortical maps. Defaults to True.
 
     Returns:
         dict: A dictionary containing the parcellated maps.
@@ -187,7 +188,7 @@ def glasserize(cortical_maps, zscore = True):
         print(f'Map: {map_name}')
 
         # Apply Glasser parcellation to the map
-        parcellated_map = glasser_parc.fit_transform(data=value['map'], space=value['annotation'][2])
+        parcellated_map = glasser_parc.fit_transform(data = value['map'], space = value['annotation'][2])
 
         # Z-score the map if zscore is True
         if zscore:
@@ -362,7 +363,7 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
     region_ids_list = []
     
     # read in csv with tracts and Glasser region IDs
-    tracts_regs_ids = pd.read_csv('./outputs/tracts_regs_Glasser.csv')
+    tracts_regs_ids = pd.read_csv('./inputs/tracts_maps_Glasser.csv')
     
     for tract in tracts:
 
@@ -415,7 +416,7 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
         plotting.plot_surf(brain_mesh,
                            input_parc_map,
                            cmap = colors,
-        #                    colorbar = True, # this gets placed on top of the brain surface, would need fixing if want to display colorbar
+#                            colorbar = True, # this gets placed on top of the brain surface, would need fixing if want to display colorbar
                            vmin = np.min(brain_map),
                            vmax = np.max(brain_map),
                            symmetric_cmap = False,
@@ -428,7 +429,7 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
         plotting.plot_surf(brain_mesh,
                            input_parc_map,
                            cmap = colors,
-        #                   colorbar = True,
+#                           colorbar = True,
                            vmin = np.min(brain_map),
                            vmax = np.max(brain_map),
                            symmetric_cmap = False,
@@ -469,27 +470,48 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
 
 
 ##### Generate a custom heatmap #######
-def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, p_value_col, spin_pval_col, 
-                     significance_threshold = 0.05, row_order = None, cmap = 'coolwarm', title = None):
+def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, p_value_col, spin_pval_col = None, 
+                     significance_threshold = 0.05, fdr = False, row_order = None, cmap = 'coolwarm', title = None, fig_size = (10, 5)):
     
     # pivot the results dataframe
     pivot_df = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = result_value_col)
     
+    # sort rows so that maps with largest values are at the bottom
+#     pivot_df = pivot_df.reindex(pivot_df.abs().sum(axis = 1).sort_values().index)
+
     # Create a wide heatmap
-#     plt.figure(figsize=(20, 4))
-#     plt.figure(figsize=(15, 6))
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize = fig_size)
 
     # Create a mask to hide non-significant values
     model_pval = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = p_value_col)
     
-    # get spin p-values (model significance)
-    spin_pval = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = spin_pval_col)
-    
-    # filter out non-significant models (based on spins)
-    model_pval[spin_pval >= 0.05] = 1 # assign to 1 so that it gets filtered out with the mask below
-#     model_pval = multipletests(model_pval, method='fdr_bh')[1] # for additional bonferroni correction
+    if spin_pval_col is None:
+        pass
+    else: # for spin testing
+        
+        # get spin p-values (model significance)
+        spin_pval = df.pivot_table(index = brain_maps_col, columns = tracts_col, values = spin_pval_col)
+        
+        # filter out non-significant models (based on spins)
+        model_pval[spin_pval >= 0.05] = 1 # assign to 1 so that it gets filtered out with the mask below
+        
+    if fdr is False:
+        pass
+    else: # for additional bonferroni correction
+        
+        # transform pvals df into flat 1 dimensional array
+        flat_pvalues = model_pval.values.flatten()
+
+        # Apply FDR correction to the flattened p-values
+        adjusted_flat_pvalues = multipletests(flat_pvalues, method = 'fdr_bh')[1] # [1] to extract the second element (corrected p-values)
+
+        # Reshape the adjusted p-values back to the shape of the original DataFrame
+        adjusted_pvalues = adjusted_flat_pvalues.reshape(model_pval.shape)
+        model_pval = pd.DataFrame(adjusted_pvalues, index = model_pval.index, columns = model_pval.columns)
+        
+    # define pval mask
     mask = model_pval > significance_threshold
+    mask = mask.reindex(pivot_df.index) # apply pivot_df ordering
     
     # reorder brain maps (rows) if needed
     if row_order is None:
@@ -497,12 +519,16 @@ def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, 
     else:
         pivot_df = pivot_df.reindex(index = row_order)
         mask = mask.reindex(index = row_order)
+    
+    # Find the maximum absolute value in your data for normalization
+    max_abs_value = np.max(np.abs(pivot_df.values))
 
-    # define a custom colormap
-    colormap = sns.diverging_palette(220, 10, as_cmap = True)
+    # Normalize the colormap based on the maximum absolute value
+    colormap = sns.diverging_palette(220, 10, as_cmap = True, center = "light")
 
     # Create the heatmap with empty white boxes for non-significant values
-    sns.heatmap(pivot_df, mask = mask, cmap = colormap, linewidths = 0.5, linecolor = 'grey', square = True) # remove the mask if you want to see all values (including non-significant ones)
+    sns.heatmap(pivot_df, mask = mask, cmap = colormap, center = 0, linewidths = 0.5, linecolor = 'lightgrey', # remove the mask if you want to see non-significant values
+               vmax = max_abs_value, vmin = -max_abs_value) # vmax and vmin set to abs(max) to have symmetrical color scale; remove to make colormap range asymmetrical
     
     # Add a title to the heatmap if provided
     if title:
@@ -511,8 +537,13 @@ def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, 
     # Turn off the internal grids
     plt.grid(False)
     
+    # add frame around the plot
+    plt.rcParams["axes.edgecolor"] = "black"
+    plt.rcParams["axes.linewidth"] = 0.5
+    
     # Show the heatmap
     plt.tight_layout()
+    
     
     # save figure
     plt.savefig(outpath,
@@ -620,7 +651,7 @@ def run_linear_regression(df, x, y, separate_by_group=False, group_column=None, 
             plt.show()
 
 ### plot individual tract results (null + empirical) #####
-def plot_density(map_name, tract, result_value, density_color):
+def plot_density(map_name, tract, result_value, density_color, analysis):
     
     """
     Plots the probability density for a specified tract and map's results, including null and empirical data.
@@ -644,7 +675,7 @@ def plot_density(map_name, tract, result_value, density_color):
     """
     
     # Load the nulls CSV file based on map_name
-    nulls_file = f"./outputs/statistical_testing/nulls_{map_name}.csv"
+    nulls_file = f"./outputs/ttests_uniqueness/nulls/nulls_{map_name}.csv"
     nulls_df = pd.read_csv(nulls_file)
 
     # Filter rows based on the specified tract_name
@@ -655,7 +686,7 @@ def plot_density(map_name, tract, result_value, density_color):
         return
 
     # Load the empirical t-tests CSV file
-    empirical_file = "./outputs/statistical_testing/empirical_t_tests.csv"
+    empirical_file = f'./outputs/ttests_uniqueness/{analysis}_empirical_t_tests.csv'
     empirical_df = pd.read_csv(empirical_file)
     
     # Filter rows based on tract_name and map_name
@@ -676,21 +707,21 @@ def plot_density(map_name, tract, result_value, density_color):
     empirical_results = empirical_data[f'empirical_{result_value}'].values[0]
     plt.axvline(x = empirical_results, color = 'orange', linestyle='--', label = f'Empirical {result_value}')
     
-    # get FDR corrected p-value
-    fdr_pval = round(empirical_data['fdr_corrected_p_val'].values[0], 3)
+    # get p-value
+    pval = round(empirical_data['spin_p_val'].values[0], 3)
 
     # Add labels and title
     plt.xlabel(f'{result_value}')
     plt.ylabel('Probability Density')
     plt.suptitle(f'Density Plot for Tract {tract} in {map_name}')
-    plt.title(f'FDR corrected p-value: {fdr_pval}')
+    plt.title(f'Spin p-value: {pval}')
     plt.legend()
 
     # Show the plot
     plt.show()
 
     # Save the figure as an image
-    image_path = f'./outputs/statistical_testing/plot_{map_name}_{tract}.png'
+    image_path = f'./outputs/ttests_uniqueness/{analysis}_density_{map_name}_{tract}.png'
     fig.savefig(image_path)
     plt.close(fig)
 
@@ -732,138 +763,8 @@ def effsize(group1, group2, metric = 'cohen'):
     
     return effect_size
 
-### Compute empirical results ####
-def compute_empirical(maps_list, map_names, tracts, tracts_regs_ids):
-    """
-    Compute empirical data for each combination of map and tract.
-
-    Parameters:
-    - maps_list (list): A list of map names to iterate over.
-    - tracts (list): A list of tract names to iterate over.
-    - map_names (list): A list of map names for reference.
-
-    Returns:
-    - result_df (DataFrame): A DataFrame containing computed empirical data with FDR-corrected p-values.
-    """
-    
-    # Initialize an empty list to store DataFrames
-    dfs = []
-    
-    # loop over all selected brain maps
-    for index, mp in enumerate(maps_list):
-
-        # map name
-        map_name = map_names[index]
-        print(f'Running empirical testing for {map_name}...')
-
-        # generate results lists
-        tract_names = [] # tract names
-        tract_size = [] # tract size (i.e., number of connected regions)
-        tracts_mean_connected = [] # mean cortical value in connected regions across tracts
-        tracts_mean_unconnected = [] # mean cortical value in unconnected regions across
-        tracts_emps_mean_diffs = [] # empirical results across tracts
-        tracts_emps_t_vals = [] # empirical t-values across tracts
-        tracts_emps_effsize = [] # effect sizes across tracts
-        tracts_emps_p_vals = [] # empirical p-values across tracts
-
-
-        # loop over tracts
-        for index, tract in enumerate(tracts):
-    #         print(f'Computing {tract}...')
-
-            ### EMPIRICAL RESULTS FOR EACH MAP AND TRACT ###
-      
-            # select brain region indices
-            tract_regs_idx = tracts_regs_ids.index[tracts_regs_ids[f'{tract}'] > 0.95].tolist()
-
-            # count number of connected regions
-            nb_connected = len(tract_regs_idx)
-
-            # select tract hemisphere
-            if 'left' in tract:
-                hem = 'L_'
-            elif 'right' in tract:
-                hem = 'R_'
-            else:
-                raise ValueError(f"hemisphere not found for: {tract}")
-
-            # select all brain region indices corresponding to the tract's hemisphere
-            hem_all_idx = tracts_regs_ids.index[tracts_regs_ids['parcel_name'].str.contains(f'{hem}')].tolist()
-
-            # create array with map values of connected brain regions
-            connected = [mp[i] for i in tract_regs_idx]
-#             print(f'Number of brain regions structurally connected to the {tract}: {len(connected)}') 
-
-            # create array with map values of non-connected regions (includes regions in both hemispheres)
-#             non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx]
-#             print(f'Number of brain regions NOT structurally connected to the {tract}: {len(non_connected)}') 
-
-            # create array with map values of non-connected regions of the SAME hemisphere as the tract 
-            non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx and i in hem_all_idx]
-
-            # two sample two-tailed t-test to compare the difference of the two distributions (structurally connected vs non-connected regions)
-            empirical_t_statistic, empirical_p_value = sstats.ttest_ind(connected, non_connected)
-
-            # compute the difference in the means (will be used for plotting)
-            empirical_mean_diff = mean(connected) - mean(non_connected)
-            
-            # compute effect size (Hedges' g as the samples are of unequal size)
-            effect_size = effsize(group1 = connected, group2 = non_connected, metric = 'hedge')
-
-            # Print the results
-#             print(f"{tract} - Empirical T-Statistic:", round(empirical_t_statistic, 3))
-#             print(f"{tract} - Empirical P-Value:", round(empirical_p_value, 3))
-#             print(f"{tract} - Empirical difference in means:", round(empirical_mean_diff, 3))
-
-            # save the results
-            tract_names.append(f'{tract}')
-            tract_size.append(nb_connected)
-            tracts_mean_connected.append(round(mean(connected), 3))
-            tracts_mean_unconnected.append(round(mean(non_connected), 3))
-            tracts_emps_mean_diffs.append(round(empirical_mean_diff, 3))
-            tracts_emps_t_vals.append(round(empirical_t_statistic, 3))
-            tracts_emps_effsize.append(round(effect_size, 3))
-            tracts_emps_p_vals.append(round(empirical_p_value, 3))
-
-        ### STORE MAP RESULTS (ACROSS ALL TRACTS) ###
-
-        # Create a temporary DataFrame for this map
-        map_df = pd.DataFrame({
-            'tract_name': tract_names,
-            'tract_size': tract_size,
-            'connected_mean': tracts_mean_connected,
-            'unconnected_mean': tracts_mean_unconnected,
-            'empirical_t_statistic': tracts_emps_t_vals,
-            'empirical_mean_diff': tracts_emps_mean_diffs,
-            'empirical_effect_size': tracts_emps_effsize,
-            'empirical_p_val': tracts_emps_p_vals
-           
-        })
-
-        # Add a map_name column to the temporary DataFrame
-        map_df['map_name'] = map_name
-
-        # Append the temporary DataFrame to the list of DataFrames
-        dfs.append(map_df)
-
-    # Concatenate the list of DataFrames into one DataFrame
-    result_df = pd.concat(dfs, ignore_index=True)
-
-    # Apply FDR correction
-    _, pvals_corrected, _, _ = sm.stats.multipletests(result_df['empirical_p_val'], alpha=0.05, method='fdr_bh')
-
-    # Replace the original 'P_Value' column with the corrected values
-    result_df['fdr_corrected_p_val'] = pvals_corrected
-
-    # Write the result to a CSV file
-    result_df.to_csv(f'./outputs/statistical_testing/empirical_t_tests.csv', index=False, header=True)
-
-    print('Done!')
-    return result_df  
-
-
 ### Compute null distribution ###
-def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
+def compute_nulls(maps_list, tracts, map_names, data, parcellation, nspins):
     """
     Compute null data for each combination of map and tract.
 
@@ -871,7 +772,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
     - maps_list (list): A list of map names to iterate over.
     - tracts (list): A list of tract names to iterate over.
     - map_names (list): A list of map names for reference.
-    - tract_regs_ids (dataframe): A dataframe of Glasser parcels (rows) by tracts (columns).
+    - data (dataframe): A dataframe of Glasser parcels (rows) by tracts (columns).
     - parcellation (tuple): A tuple of 2 gifti objects contains left and right hemisphere Glasser labels 
                             (where each gifti contains an array of 32492 vertices with assigned labels).
 
@@ -886,12 +787,12 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
     for index, mp in enumerate(maps_list):
 
         # map name
-        map_name = map_names[index]
+        map_name = map_names[index]        
         print(f'Running nulls for {map_name}...')
 
         # create nulls by shuffling the parcellated map - this gives a new randomly assigned map values (for instance, myelin) for each brain region
         rotated_maps = nulls.alexander_bloch(mp, atlas = 'fsLR', density = '32k',
-                                        n_perm = 100, seed = 1234, parcellation = parcellation)
+                                        n_perm = nspins, seed = 1234, parcellation = parcellation)
 
         # generate results lists
         tract_names = [] # tract names
@@ -907,7 +808,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
 #             print(f'Computing {tract}...')
 
             # select brain region indices
-            tract_regs_idx = tracts_regs_ids.index[tracts_regs_ids[f'{tract}'] > 0.95].tolist()
+            tract_regs_idx = data.index[data[f'{tract}'] > 0.95].tolist()
 
             # count number of connected regions
             nb_connected = len(tract_regs_idx)
@@ -921,7 +822,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
                 raise ValueError(f"hemisphere not found for: {tract}")
 
             # select all brain region indices corresponding to the tract's hemisphere
-            hem_all_idx = tracts_regs_ids.index[tracts_regs_ids['parcel_name'].str.contains(f'{hem}')].tolist()
+            hem_all_idx = data.index[data['parcel_name'].str.contains(f'{hem}')].tolist()
 
             ### NULL RESULTS ###
 
@@ -936,7 +837,7 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
             # generate null distribution (using neuromaps spatial nulls)
             for map_index, rotated_map in enumerate(rotated_maps.T): # transposing to iterate through columns (i.e. maps)
 
-                if map_index < 100: # loop until the 99th iteration, which corresponds to the 100th and last column
+                if map_index < nspins: # loop until the last spin column
 
                     # assign rotated map name
                     rotated_map_name = f'rotated_map_{map_index}'
@@ -999,12 +900,12 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
         null_map_df['map_name'] = map_name
 
         # create outputs folder if doesn't yet exist
-        outputs_folder = './outputs/statistical_testing'
+        outputs_folder = './outputs/ttests_uniqueness/nulls/'
         if not os.path.exists(outputs_folder):
             os.makedirs(outputs_folder)
 
         # write as csv
-        null_map_df.to_csv(f'./outputs/statistical_testing/nulls_{map_name}.csv', index = False, header = True)
+        null_map_df.to_csv(f'./outputs/ttests_uniqueness/nulls/nulls_{map_name}.csv', index = False, header = True)
         
          # Add the null_map_df to the dictionary with the map_name as the key
         null_map_dict[map_name] = null_map_df
@@ -1012,8 +913,144 @@ def compute_nulls(maps_list, tracts, map_names, tracts_regs_ids, parcellation):
     print('Done!')
     return null_map_dict
 
+### Compute empirical results ####
+def compute_empirical(maps_list, map_names, tracts, data, nulls, nspins, analysis):
+    """
+    Compute empirical data for each combination of map and tract.
+
+    Parameters:
+    - maps_list (list): A list of map names to iterate over.
+    - tracts (list): A list of tract names to iterate over.
+    - map_names (list): A list of map names for reference.
+    - data (dataframe): A dataframe of Glasser parcels (rows) by tracts (columns).
+    - nulls (dict): A dictionary containing nulls results (values) for each brain map (keys).
+
+    Returns:
+    - result_df (DataFrame): A DataFrame containing computed empirical data with FDR-corrected p-values.
+    """
+    
+    # Initialize an empty list to store DataFrames
+    dfs = []
+    
+    # loop over all selected brain maps
+    for index, mp in enumerate(maps_list):
+
+        # map name
+        map_name = map_names[index]
+        print(f'Running empirical testing for {map_name}...')
+
+        # generate results lists
+        tract_names = [] # tract names
+        tract_size = [] # tract size (i.e., number of connected regions)
+        tracts_mean_connected = [] # mean cortical value in connected regions across tracts
+        tracts_mean_unconnected = [] # mean cortical value in unconnected regions across
+        tracts_emps_mean_diffs = [] # empirical results across tracts
+        tracts_emps_t_vals = [] # empirical t-values across tracts
+        tracts_emps_effsize = [] # effect sizes across tracts
+        tracts_emps_p_vals = [] # empirical p-values across tracts
+        tracts_spin_p_vals = [] # spin-based p-values across tracts
+
+
+        # loop over tracts
+        for index, tract in enumerate(tracts):
+    #         print(f'Computing {tract}...')
+
+            ### EMPIRICAL RESULTS FOR EACH MAP AND TRACT ###
+      
+            # select brain region indices
+            tract_regs_idx = data.index[data[f'{tract}'] > 0.95].tolist()
+
+            # count number of connected regions
+            nb_connected = len(tract_regs_idx)
+
+            # select tract hemisphere
+            if 'left' in tract:
+                hem = 'L_'
+            elif 'right' in tract:
+                hem = 'R_'
+            else:
+                raise ValueError(f"hemisphere not found for: {tract}")
+
+            # select all brain region indices corresponding to the tract's hemisphere
+            hem_all_idx = data.index[data['parcel_name'].str.contains(f'{hem}')].tolist()
+
+            # create array with map values of connected brain regions
+            connected = [mp[i] for i in tract_regs_idx]
+#             print(f'Number of brain regions structurally connected to the {tract}: {len(connected)}') 
+
+            # create array with map values of non-connected regions (includes regions in both hemispheres)
+#             non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx]
+#             print(f'Number of brain regions NOT structurally connected to the {tract}: {len(non_connected)}') 
+
+            # create array with map values of non-connected regions of the SAME hemisphere as the tract 
+            non_connected = [mp[i] for i in range(len(mp)) if i not in tract_regs_idx and i in hem_all_idx]
+
+            # two sample two-tailed t-test to compare the difference of the two distributions (structurally connected vs non-connected regions)
+            empirical_t_statistic, empirical_p_value = sstats.ttest_ind(connected, non_connected)
+
+            # compute the difference in the means (will be used for plotting)
+            emp = mean(connected) - mean(non_connected)
+            
+            # compute effect size (Hedges' g as the samples are of unequal size)
+            effect_size = effsize(group1 = connected, group2 = non_connected, metric = 'hedge')
+            
+            # compute spin p-values (represents the proportion of values in the null distribution that are as or more extreme than the observed empirical difference)
+            null_df = nulls[map_name]
+            null = null_df[null_df['tract_name'] == tract]['null_mean_diff']
+            spin_p_val = (1 + np.sum(np.abs((null - np.mean(null)))
+                      >= abs((emp - np.mean(null))))) / (nspins + 1)
+
+            # save the results
+            tract_names.append(f'{tract}')
+            tract_size.append(nb_connected)
+            tracts_mean_connected.append(round(mean(connected), 3))
+            tracts_mean_unconnected.append(round(mean(non_connected), 3))
+            tracts_emps_mean_diffs.append(round(emp, 3))
+            tracts_emps_t_vals.append(round(empirical_t_statistic, 3))
+            tracts_emps_effsize.append(round(effect_size, 3))
+            tracts_emps_p_vals.append(round(empirical_p_value, 3))
+            tracts_spin_p_vals.append(round(spin_p_val, 3))
+
+        ### STORE MAP RESULTS (ACROSS ALL TRACTS) ###
+
+        # Create a temporary DataFrame for this map
+        map_df = pd.DataFrame({
+            'tract_name': tract_names,
+            'tract_size': tract_size,
+            'connected_mean': tracts_mean_connected,
+            'unconnected_mean': tracts_mean_unconnected,
+            'empirical_t_statistic': tracts_emps_t_vals,
+            'empirical_mean_diff': tracts_emps_mean_diffs,
+            'empirical_effect_size': tracts_emps_effsize,
+            'empirical_p_val': tracts_emps_p_vals,
+            'spin_p_val': tracts_spin_p_vals
+           
+        })
+
+        # Add a map_name column to the temporary DataFrame
+        map_df['map_name'] = map_name
+
+        # Append the temporary DataFrame to the list of DataFrames
+        dfs.append(map_df)
+
+    # Concatenate the list of DataFrames into one DataFrame
+    result_df = pd.concat(dfs, ignore_index=True)
+
+    # Apply FDR correction
+    _, pvals_corrected, _, _ = sm.stats.multipletests(result_df['spin_p_val'], alpha = 0.05, method = 'fdr_bh')
+
+    # Replace the original 'P_Value' column with the corrected values
+    result_df['fdr_spin_p_val'] = pvals_corrected
+
+    # Write the result to a CSV file
+    result_df.to_csv(f'./outputs/ttests_uniqueness/{analysis}_empirical_t_tests.csv', index = False, header = True)
+
+    print('Done!')
+    return result_df  
+
+
 ### Display tract, map gradients and tract mean, SD #####
-def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap = 'viridis'):
+def create_gradient_bar(tract, data, maps_list, map_names, colormap = 'viridis'):
     
     '''
     Create a horizontal bar with a color gradient and standard deviation indicators.
@@ -1036,7 +1073,7 @@ def create_gradient_bar(tract, tracts_regs_ids, maps_list, map_names, colormap =
     ### Define tract information ###
 
     # select brain region indices
-    tract_regs_idx = tracts_regs_ids.index[tracts_regs_ids[f'{tract}'] > 0.95].tolist()
+    tract_regs_idx = data.index[data[f'{tract}'] > 0.95].tolist()
     
     # select tract hemisphere
     if 'left' in tract:
@@ -1153,7 +1190,7 @@ def regression_spins(df, map_names, nspins, testtype, parcellation):
     results = []
 
     # dictionary to store null R2 from spins
-    null_rsq = []
+    null_rsq = {}
 
     # define test type for model pvalues (based on spins)
     testtype = 'twotailed'
@@ -1180,7 +1217,7 @@ def regression_spins(df, map_names, nspins, testtype, parcellation):
         for iMap in range(n_features):        
 
             # select brain map values
-            map_name = map_names[iMap]
+#             map_name = map_names[iMap]
             spins = spins_dict[map_name]
 
             ### --- Empirical results --- ###
@@ -1206,7 +1243,7 @@ def regression_spins(df, map_names, nspins, testtype, parcellation):
                 y_null = spun_map[hem_subset.index] # select hemisphere brain regions in spun map
                 null_model = sm.OLS(y_null, X).fit()
                 null_rsquared_adj[: ,iSpin] = null_model.rsquared_adj
-
+            
             # compute p-value (represents the proportion of permuted values that are as extreme or more extreme than the empirical value)
     #         pvalspin = (1 + sum(null_rsquared_adj > emp_rsquared_adj))/(nspins + 1) # Justine's version (one tailed)
 
@@ -1229,8 +1266,14 @@ def regression_spins(df, map_names, nspins, testtype, parcellation):
                                 'Adjusted_R2': emp_rsquared_adj,
                                 'Spin_P_Value': pvalspin,
                                 'Null_R2': null_rsquared_adj})
+                
+            # append null adjusted R-squared for each brain map
+            null_rsq[map_names[iMap]] = null_rsquared_adj
 
     print('Done!')
+    
+    # save nulls dictionary
+    np.savez(f'./outputs/regression/nulls/{analysis}_{hemisphere}_nulls.npz', **null_rsq)
 
     # Create a DataFrame from the list of results
     regression_df = pd.DataFrame(results)

@@ -7,7 +7,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.api as sm
-from statsmodels.stats.multitest import multipletests
+# from statsmodels.stats.multitest import multipletests
 from scipy import stats as sstats
 from statistics import mean
 from PIL import Image
@@ -317,7 +317,7 @@ def plot_parc_map(brain_map, map_name, colors, hemisphere = None, mode = 'intera
                                   title_fontsize = 20)
 
 ### Plot subset of structurally connected regions for a given brain map and tract ###
-def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectral', mode = 'interactive', connection_threshold = 0.95):
+def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectral', mode = 'interactive', connection_threshold = 0.95, path = None, show_title = True):
     
     """
     Plots a subset of parcellated regions in a `brain_map` using nilearn plotting functions
@@ -338,6 +338,10 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
         Whether the figure should be interactive or static. Default is 'interactive'.
     connection_threshold: str, optional
         Defines the connection threshold used to select brain regions structurally connected to the input tract. Default is 95% probability of connection (0.95).
+    path: str, optional
+        If specified, the image (static only) is saved as an svg file at the defined file path. Default is no file saving.
+    show_title: boolean, optional
+        Whether to display the plot title. Default is True. 
 
     Returns
     -------
@@ -440,10 +444,17 @@ def plot_parc_subset(brain_map, tract_names, map_name, tracts, colors = 'Spectra
 
         # plot title
         tract_names = ', '.join(tract_names)
-        plt.suptitle(f'{map_name} in {len(unique_region_ids)} regions connected to {tract_names}', fontsize = 13)
+        if show_title:
+            plt.suptitle(f'{map_name} in {len(unique_region_ids)} regions connected to {tract_names}', fontsize = 13)
 
         # Adjust layout and display the plots
         plt.tight_layout()
+        
+        # Save the figure as an image if a path is specified
+        if path is not None:
+            image_path = f'{path}/surfmap_{map_name}_{tract_names}.svg'
+            fig.savefig(image_path)
+
         plt.show()
 
     else: # interactive plot
@@ -503,11 +514,12 @@ def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, 
         flat_pvalues = model_pval.values.flatten()
 
         # Apply FDR correction to the flattened p-values
-        adjusted_flat_pvalues = multipletests(flat_pvalues, method = 'fdr_bh')[1] # [1] to extract the second element (corrected p-values)
+#         adjusted_flat_pvalues = multipletests(flat_pvalues, method = 'fdr_bh')[1] # [1] to extract the second element (corrected p-values)
+        _, flat_pvals_corrected, _, _ = sm.stats.multipletests(flat_pvalues, alpha = 0.05, method = 'fdr_bh')
 
         # Reshape the adjusted p-values back to the shape of the original DataFrame
-        adjusted_pvalues = adjusted_flat_pvalues.reshape(model_pval.shape)
-        model_pval = pd.DataFrame(adjusted_pvalues, index = model_pval.index, columns = model_pval.columns)
+        pvals_corrected = flat_pvals_corrected.reshape(model_pval.shape)
+        model_pval = pd.DataFrame(pvals_corrected, index = model_pval.index, columns = model_pval.columns)
         
     # define pval mask
     mask = model_pval > significance_threshold
@@ -540,6 +552,7 @@ def generate_heatmap(outpath, df, brain_maps_col, tracts_col, result_value_col, 
     # add frame around the plot
     plt.rcParams["axes.edgecolor"] = "black"
     plt.rcParams["axes.linewidth"] = 0.5
+    plt.rcParams.update({'font.size': 10})
     
     # Show the heatmap
     plt.tight_layout()
@@ -651,7 +664,7 @@ def run_linear_regression(df, x, y, separate_by_group=False, group_column=None, 
             plt.show()
 
 ### plot individual tract results (null + empirical) #####
-def plot_density(map_name, tract, result_value, density_color, analysis):
+def plot_density(map_name, tract, result_value, density_color, analysis, legend = True, show_title = True):
     
     """
     Plots the probability density for a specified tract and map's results, including null and empirical data.
@@ -662,6 +675,9 @@ def plot_density(map_name, tract, result_value, density_color, analysis):
     - result_value (str): Name of the result value to be plotted. 
         Options are 't_statistic' for the t-values of the t-test, or 'mean_diff' for the difference of the means. 
     - density_color (str): Color for the probability density plot.
+    - analysis (str): which analysis this corresponds to (cortex, neurosynth).
+    - legend (bool): whether to display the plot legends or not (default is True).
+    - show_title (bool): whether to display the plot title (default is True).
 
     The function loads null and empirical data from CSV files, filters the data based on the specified
     map_name and tract, and then creates a density plot using Kernel Density Estimation (KDE) for the
@@ -697,32 +713,41 @@ def plot_density(map_name, tract, result_value, density_color, analysis):
         return
     
     # Create a new figure for each plot
-    fig = plt.figure()
+    fig = plt.figure(figsize = (7, 6))
 
     # Create a probability density plot using KDE
     null_results = tract_data[f'null_{result_value}']
-    sns.kdeplot(null_results, shade = True, color = density_color)
+    sns.kdeplot(null_results, shade = True, color = density_color, label = 'Null (spin test)')
 
     # Add a vertical line at the empirical mean difference (i.e. for the non-rotated original map)
     empirical_results = empirical_data[f'empirical_{result_value}'].values[0]
-    plt.axvline(x = empirical_results, color = 'orange', linestyle='--', label = f'Empirical {result_value}')
+    plt.axvline(x = empirical_results, color = 'orange', linestyle='--', label = f'Empirical mean difference') # f'Empirical {result_value}'
     
     # get p-value
     pval = round(empirical_data['spin_p_val'].values[0], 3)
 
     # Add labels and title
-    plt.xlabel(f'{result_value}')
+#     plt.xlabel(f'{result_value}')
+    plt.xlabel(f'Mean difference')
     plt.ylabel('Probability Density')
-    plt.suptitle(f'Density Plot for Tract {tract} in {map_name}')
-    plt.title(f'Spin p-value: {pval}')
-    plt.legend()
+    
+    if show_title:
+        plt.suptitle(f'Density Plot for Tract {tract} in {map_name}')
+        
+    pspin = "spin"  # subscript
+    plt.title(f'$p_{{{pspin}}}$ = {pval}')
 
-    # Show the plot
-    plt.show()
-
+    # plot legend if set to True (default)
+    if legend:
+        plt.legend()
+                
+    plt.rcParams.update({'font.size': 18})  # change font size
+    plt.tight_layout()
+    
     # Save the figure as an image
-    image_path = f'./outputs/ttests_uniqueness/{analysis}_density_{map_name}_{tract}.png'
+    image_path = f'./outputs/ttests_uniqueness/neurosynth_allmaps/{analysis}_density_{map_name}_{tract}.svg'
     fig.savefig(image_path)
+    plt.show()
     plt.close(fig)
 
 ### Calculate effect size (Cohen's d or Hedge's g) for independent samples ###
@@ -1164,7 +1189,7 @@ def create_gradient_bar(tract, data, maps_list, map_names, colormap = 'viridis')
 
 ### REGRESSIONS (BRAIN MAP ~ TRACTS) AND SIGNIFICANCE TESTING (SPINS) ####
 import statsmodels.api as sm
-def regression_spins(df, map_names, nspins, testtype, parcellation):
+def regression_spins(df, map_names, nspins, testtype, parcellation, analysis):
     
     # get number of brain maps
     n_features = len(map_names)
@@ -1217,7 +1242,7 @@ def regression_spins(df, map_names, nspins, testtype, parcellation):
         for iMap in range(n_features):        
 
             # select brain map values
-#             map_name = map_names[iMap]
+            map_name = map_names[iMap]
             spins = spins_dict[map_name]
 
             ### --- Empirical results --- ###
@@ -1269,13 +1294,297 @@ def regression_spins(df, map_names, nspins, testtype, parcellation):
                 
             # append null adjusted R-squared for each brain map
             null_rsq[map_names[iMap]] = null_rsquared_adj
-
-    print('Done!')
     
-    # save nulls dictionary
-    np.savez(f'./outputs/regression/nulls/{analysis}_{hemisphere}_nulls.npz', **null_rsq)
+        # save nulls dictionary per hemisphere
+        np.savez(f'./outputs/regression/nulls/{analysis}_{hemisphere}_nulls.npz', **null_rsq)
+
 
     # Create a DataFrame from the list of results
     regression_df = pd.DataFrame(results)
     
+    print('Done!')
+    
     return regression_df
+
+
+### ASSORTATIVITY FUNCTIONS ###
+# Based on https://github.com/netneurolab/bazinet_assortativity/blob/master/functions.py
+
+# function to generate a tract mask based on a given connection probability threshold
+def generate_tract_masks(data, tract_names, connection_threshold = 0.95):
+    
+    """
+    Generate binary masks for specified tracts based on connection probabilities.
+
+    Parameters:
+    - data (pd.DataFrame): Dataset containing connection probabilities for different tracts.
+    - tract_names (list): List of tract names for which masks will be generated.
+    - connection_threshold (float, optional): Threshold for binarizing tract connections. Default is 0.95.
+
+    Returns:
+    - masks (dict): Dictionary containing binary masks for each specified tract.
+    """
+    
+    # dictionary to save tract mask matrices in
+    masks = {}
+    
+    # loop over tracts
+    for tract_name in tract_names:
+        
+        # select tract connection probabilites
+        tract_probs = np.array(data[tract_name])
+    
+        # select regions corresponding to the hemisphere the tract belongs to
+        if 'left' in tract_name:
+            hem_tract_probs = tract_probs[:180]
+        elif 'right' in tract_name:
+            hem_tract_probs = tract_probs[180:]
+    
+        # binarize tract connections based on threshold
+        tract_mask = np.where(hem_tract_probs >= connection_threshold, 1, 0)
+
+        # construct a connectivity matrix using the outer product (if both regions are connected to the tract, the matrix will have a 1 at that spot; otherwise, it's 0)
+        tract_mask = np.outer(tract_mask, tract_mask)
+
+        # create mask to only select upper triangle region pairs (avoids redundancy in symmetrical matrices)
+        nnodes = len(tract_mask)
+        upper_mask = (np.triu(np.ones(nnodes), 1) > 0)  # the 1 argument means skip the diagonal and extract all above it
+        
+        # Create a new matrix with 1 where both conditions are met
+        tract_mask = (tract_mask == 1) & upper_mask
+
+        # Convert True/False to 1/0
+        tract_mask = tract_mask.astype(int)
+
+        # save to dictionary
+        masks[tract_name] = tract_mask
+        
+    return masks
+
+# function to compute an assortativity coefficient for a given annotation and a binary adjacency matrix
+def assortativity_coefficient(A, M):
+    """
+    Calculate assortativity coefficient for a network based on a nodal attribute and a binary adjacency matrix.
+
+    Parameters
+    ----------
+    A : (n,n) ndarray
+        Binary adjacency matrix of a tract. 
+        Note that the adjacency matrix only contains upper triangle region pairs (avoids redundancy in symmetrical, undirected matrices).
+    M : (n,) ndarray
+        Vector of z-scored nodal attributes. 
+
+    Returns
+    -------
+    ga : float
+        Assortativity coefficient based on the vector of attributes.
+    """
+    
+    # Normalize the adjacency matrix to make weights sum to 1 
+    A = A / A.sum(axis = None)
+    
+    # Calculate the assortativity coefficient as per the original formula
+    # Note: dividing by total_connections in order to treat binary connections as having equal weight in the assortativity calculation 
+    # as per the formula in the paper (https://doi.org/10.1038/s41467-023-38585-4). It essentially scales the matrix so that the sum of all its elements becomes 1.
+#     ga = (M[np.newaxis, :] * M[:, np.newaxis] * A).sum()
+    
+    # z-scoring of annotation (based on Vince Bazinet's code at https://github.com/netneurolab/bazinet_assortativity/blob/master/functions.py#L39C5-L39C20)
+    k = A.sum(axis = 0)
+    mean = np.sum(k * M)
+    sd = np.sqrt(np.sum(k * ((M - mean) ** 2)))
+    Mz = (M - mean) / sd
+    ga = (Mz[np.newaxis, :] * Mz[:, np.newaxis] * A).sum()
+
+    return ga
+
+# function to compute assortativity coefficients for spun annot maps (nulls) in batches
+def assort_null_batch(A, M_all, n_batch = 100):
+    '''
+    Function to compute the weighted assortativity of a "batch" of attributes
+    on a single undirected binary adjaccency matrix.
+
+    Parameters
+    ----------
+    A : (n, n) ndarray
+        Binary adjacency matrix representing the presence (1) or absence (0) of a connection to the tract for pairs of regions.
+    M_all : (m, n) ndarray
+        Matrix of spun z-scored annotations (nspins x brain regions).
+    n_batch: int
+        Number of spins in each batch.
+
+    Returns
+    -------
+    ga : ndarray
+        Array of assortativity results for each batch. The total number of ga scores outputted is equal to n_batch.
+    '''
+    
+    # initialize results array
+    ga = np.array([])
+
+    # create batches of annotations
+    M_batches = np.array_split(M_all, n_batch)
+
+    # Normalize the adjacency matrix to make weights sum to 1
+    A = A / A.sum(axis = None)
+
+    # compute degree
+    k = A.sum(axis = 0)
+
+    for M in M_batches:
+        
+        # compute z-scores of annotations
+        mean = (k[np.newaxis, :] * M).sum(axis = 1)
+        var = (k[np.newaxis, :] * ((M - mean[:, np.newaxis])**2)).sum(axis = 1)
+        sd = np.sqrt(var)
+        Mz = (M - mean[:, np.newaxis]) / sd[:, np.newaxis]
+
+        # Compute assortativity
+        ga_batch = A[np.newaxis, :, :] * Mz[:, :, np.newaxis] * Mz[:, np.newaxis, :] # for after z-scoring
+#         ga_batch = A[np.newaxis, :, :] * M[:, :, np.newaxis] * M[:, np.newaxis, :]
+        ga_batch = ga_batch.sum(axis = (1, 2)) # summation collapses the 3D array into a 1D array representing all the assortativity for the batch (1 score per spun annot).
+        
+        # Add assortativity results to ga
+        ga = np.concatenate((ga, ga_batch), axis = 0)
+
+    return ga
+
+# function to plot empirical tract assortativity scores
+def plot_tract_assort(tracts, hemisphere_name, ax):
+    '''
+    Plot tracts for a specific hemisphere.
+
+    Parameters
+    ----------
+    tracts : list of tuples
+        List containing tuples of (tract_name, max_result_score, min_p, result_scores, p_fdrs).
+    hemisphere_name : str
+        Name of the hemisphere ('Left' or 'Right').
+    ax : matplotlib.axes._subplots.AxesSubplot
+        Axes object for the subplot.
+    '''
+
+    # Unpack the tracts data
+    tract_names, max_result_score, result_scores, p_vals = zip(*tracts)
+
+    # Plot hemisphere tracts using scatterplot
+#     for i in range(len(tracts)):
+#         ax.scatter([i] * len(result_scores[i]), result_scores[i], c=['lightcoral' if p < 0.05 else 'grey' for p in p_fdrs[i]])
+    
+    # Plot hemisphere tracts using stripplot
+    custom_grey = (0.7, 0.7, 0.7, 0.5)  # Grey RGB values with alpha
+    for i, (scores, p_values) in enumerate(zip(result_scores, p_vals)):
+        x_coords = np.full(len(scores), i) + np.random.uniform(-0.2, 0.2, len(scores))
+        ax.scatter(x_coords, scores, c = ['lightcoral' if p < 0.05 else custom_grey for p in p_values])
+
+    ax.set_xticks(range(len(tracts)))
+    ax.set_xticklabels(tract_names, rotation = 45, ha = 'right')
+    ax.set_xlabel(f'Tracts')
+    ax.set_ylabel('Assortativity Coefficient')
+    ax.set_title(f'{hemisphere_name} Hemisphere')
+    
+# assortativity and utility functions from Bazinet
+import pickle 
+
+def load_data(path):
+    '''
+    Utility function to load pickled dictionary containing the data used in
+    these experiments.
+
+    Parameters
+    ----------
+    path: str
+        File path to the pickle file to be loaded.
+
+    Returns
+    -------
+    data: dict
+        Dictionary containing the data used in these experiments
+    '''
+
+    with open(path, 'rb') as handle:
+        data = pickle.load(handle)
+
+    return data
+
+def save_data(data, path):
+    '''
+    Utility function to save pickled dictionary containing the data used in
+    these experiments.
+
+    Parameters
+    ----------
+    data: dict
+        Dictionary storing the data that we want to save.
+    path: str
+        path of the pickle file
+    '''
+
+    with open(path, 'wb') as handle:
+        pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        
+        
+def standardize_scores(null, emp, axis = None, ignore_nan = False):
+    '''
+    Utility function to standardize a score relative to a null distribution.
+
+    Parameters
+    ----------
+    null : array-like
+        Null distribution of scores.
+    emp : float
+        Empirical score.
+    axis : int or None, optional
+        Axis or axes along which the means and standard deviations are computed.
+        The default is None.
+    ignore_nan : bool, optional
+        If True, NaN values are ignored when computing the mean and standard deviation.
+        The default is False.
+
+    Returns
+    -------
+    standardized_score : ndarray
+        The standardized score relative to the null distribution.
+    '''
+    
+    if ignore_nan:
+        return (emp - np.nanmean(null, axis = axis)) / np.nanstd(null, axis = axis)
+    else:
+        return (emp - null.mean(axis = axis)) / null.std(axis = axis)
+
+
+def get_p_value(null, emp, axis = 0):
+    '''
+    Utility function to compute the p-value (two-tailed) of a score, relative
+    to a null distribution.
+
+    Parameters
+    ----------
+    null : array-like
+        Null distribution of (permuted) scores.
+    emp : float or array-like
+        Empirical score.
+    axis : int, optional
+        Axis of the `null` array associated with the null scores.
+        The default is 0.
+
+    Returns
+    -------
+    pval : ndarray
+        The two-tailed p-value of the empirical score.
+    '''
+
+    # Get the number of permutations
+    k = null.shape[axis]
+
+    # Move the specified axis to the front for easier comparison
+    null_moved = np.moveaxis(null, axis, 0)
+
+    # Calculate the mean of permuted scores along the specified axis (ignoring NaNs)
+    null_mean = np.nanmean(null_moved, axis = 0)
+
+    # Compute the two-tailed p-value
+    num = np.count_nonzero(abs(null_moved - null_mean) > abs(emp - null_mean), axis = 0)
+    den = k
+    pval = num / den
+
+    return pval
